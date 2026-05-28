@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>X Stock Ticker Monitor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #111; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+    .tab-active { border-color: #3b82f6; color: #fff; }
+    .tab-inactive { border-color: transparent; color: #6b7280; }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen font-mono text-sm">
+
+  <div class="max-w-6xl mx-auto px-6 py-8">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between border-b border-gray-800 pb-4 mb-8">
+      <div>
+        <h1 class="text-xl font-bold tracking-tight text-white">X Stock Ticker Monitor</h1>
+        <p class="text-gray-500 text-xs mt-0.5">Scan X accounts · extract US-listed tickers · sector breakdown · export JSON</p>
+      </div>
+      <span class="text-xs text-gray-600 bg-gray-900 border border-gray-800 px-2 py-1 rounded">US stocks only</span>
+    </div>
+
+    <!-- Input form -->
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-6">
+      <label class="block text-gray-300 font-semibold mb-2 text-xs uppercase tracking-wider">X Accounts to Monitor</label>
+      <textarea id="usernames" rows="4"
+        placeholder="One username per line, or comma-separated:&#10;&#10;chamath&#10;unusual_whales, Mr_Derivatives"
+        class="w-full bg-gray-800 text-gray-100 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:border-blue-500 resize-none placeholder-gray-600 leading-relaxed"></textarea>
+      <!-- Depth controls -->
+      <div class="flex flex-wrap items-center gap-4 mt-4 pt-4 border-t border-gray-800">
+        <div class="flex items-center gap-2">
+          <label class="text-gray-500 text-xs uppercase tracking-wider whitespace-nowrap">Max posts</label>
+          <select id="postCount"
+            class="bg-gray-800 text-gray-200 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500">
+            <option value="10">10 posts</option>
+            <option value="25">25 posts</option>
+            <option value="50">50 posts</option>
+            <option value="100">100 posts</option>
+            <option value="200">200 posts</option>
+          </select>
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="text-gray-500 text-xs uppercase tracking-wider whitespace-nowrap">Since date</label>
+          <input type="date" id="sinceDate"
+            class="bg-gray-800 text-gray-200 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+            title="Stop collecting posts older than this date (optional)" />
+          <span class="text-gray-600 text-xs">optional</span>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-4 mt-4">
+        <button id="scrapeBtn" onclick="runScrape()"
+          class="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white px-6 py-2 rounded-lg font-semibold text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+          Scan Accounts
+        </button>
+        <div id="spinner" class="hidden flex items-center gap-2 text-gray-400 text-xs">
+          <svg class="animate-spin h-4 w-4 text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+          </svg>
+          <span id="spinnerText">Scraping + sector lookup…</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Error -->
+    <div id="errorBox" class="hidden bg-red-950 border border-red-800 rounded-xl p-4 mb-6 text-red-300 text-xs leading-relaxed"></div>
+
+    <!-- Results -->
+    <div id="results" class="hidden space-y-6">
+
+      <!-- Meta + download -->
+      <div class="flex items-center justify-between">
+        <div id="metaBar" class="text-gray-400 text-xs"></div>
+        <button onclick="downloadJSON()"
+          class="text-xs text-gray-400 hover:text-white border border-gray-700 hover:border-gray-500 px-3 py-1.5 rounded-lg transition-colors">
+          Download JSON
+        </button>
+      </div>
+
+      <!-- Combined section with tabs -->
+      <div>
+        <div class="flex items-center gap-4 mb-3 border-b border-gray-800 pb-0">
+          <button id="tab-ranked" onclick="switchTab('ranked')"
+            class="tab-active border-b-2 px-1 pb-2 text-sm font-semibold transition-colors">
+            Ranked Tickers
+          </button>
+          <button id="tab-sector" onclick="switchTab('sector')"
+            class="tab-inactive border-b-2 px-1 pb-2 text-sm font-semibold transition-colors">
+            By Sector
+          </button>
+        </div>
+
+        <!-- Ranked view -->
+        <div id="view-ranked">
+          <div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <table class="w-full">
+              <thead>
+                <tr class="border-b border-gray-800 text-gray-500 text-xs uppercase tracking-wider">
+                  <th class="text-left px-4 py-3 w-8">#</th>
+                  <th class="text-left px-4 py-3">Ticker</th>
+                  <th class="text-left px-4 py-3">Price</th>
+                  <th class="text-left px-4 py-3">Change</th>
+                  <th class="text-left px-4 py-3">Company</th>
+                  <th class="text-left px-4 py-3">Sector</th>
+                  <th class="text-left px-4 py-3">Mentions</th>
+                  <th class="text-left px-4 py-3">Accounts</th>
+                </tr>
+              </thead>
+              <tbody id="combinedTable"></tbody>
+            </table>
+          </div>
+          <p class="text-gray-700 text-xs mt-1.5 pl-1">Prices from Yahoo Finance · ~15 min delayed · cached 5 min</p>
+        </div>
+
+        <!-- By Sector view -->
+        <div id="view-sector" class="hidden space-y-4"></div>
+      </div>
+
+      <!-- Per-account results -->
+      <div>
+        <h2 class="text-white font-bold mb-3">Per-Account Breakdown</h2>
+        <div id="accountResults" class="space-y-4"></div>
+      </div>
+
+    </div>
+
+    <!-- Recent runs -->
+    {% if recent_runs %}
+    <div class="mt-10 border-t border-gray-900 pt-6">
+      <p class="text-gray-600 text-xs uppercase tracking-wider mb-3">Recent Runs</p>
+      <div class="space-y-1">
+        {% for run in recent_runs %}
+        <a href="/results/{{ run.filename }}" target="_blank"
+          class="flex items-center justify-between text-xs text-gray-500 hover:text-gray-200 py-1.5 border-b border-gray-900 transition-colors group">
+          <span class="group-hover:text-gray-200">{{ run.filename }}</span>
+          <span class="text-gray-700">{{ run.date }}</span>
+        </a>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+
+  <script>
+    let currentResult = null;
+
+    function switchTab(tab) {
+      document.getElementById('view-ranked').classList.toggle('hidden', tab !== 'ranked');
+      document.getElementById('view-sector').classList.toggle('hidden', tab !== 'sector');
+      document.getElementById('tab-ranked').className = tab === 'ranked'
+        ? 'tab-active border-b-2 px-1 pb-2 text-sm font-semibold transition-colors'
+        : 'tab-inactive border-b-2 px-1 pb-2 text-sm font-semibold transition-colors';
+      document.getElementById('tab-sector').className = tab === 'sector'
+        ? 'tab-active border-b-2 px-1 pb-2 text-sm font-semibold transition-colors'
+        : 'tab-inactive border-b-2 px-1 pb-2 text-sm font-semibold transition-colors';
+    }
+
+    async function runScrape() {
+      const usernames = document.getElementById('usernames').value.trim();
+      if (!usernames) return;
+
+      const count = parseInt(document.getElementById('postCount').value) || 10;
+      const since_date = document.getElementById('sinceDate').value || '';
+
+      const btn = document.getElementById('scrapeBtn');
+      btn.disabled = true;
+      document.getElementById('spinner').classList.remove('hidden');
+      document.getElementById('results').classList.add('hidden');
+      document.getElementById('errorBox').classList.add('hidden');
+
+      // Contextual spinner message
+      let msg = `Scanning up to ${count} posts`;
+      if (since_date) msg += ` since ${since_date}`;
+      msg += ' — may take a while for large scans…';
+      document.getElementById('spinnerText').textContent = msg;
+
+      try {
+        const resp = await fetch('/scrape', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ usernames, count, since_date }),
+        });
+        const data = await resp.json();
+        if (data.error) showError(data.error);
+        else { currentResult = data; renderResults(data.result); }
+      } catch (e) {
+        showError('Request failed: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        document.getElementById('spinner').classList.add('hidden');
+      }
+    }
+
+    function showError(msg) {
+      const box = document.getElementById('errorBox');
+      box.textContent = 'Error: ' + msg;
+      box.classList.remove('hidden');
+    }
+
+    function fmtDate(iso) {
+      if (!iso) return '';
+      try {
+        const d = new Date(iso);
+        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+          + ' ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      } catch { return iso; }
+    }
+
+    function fmtPrice(price, currency) {
+      if (price == null) return '<span class="text-gray-600">—</span>';
+      const sym = currency === 'USD' ? '$' : (currency || '$');
+      return `<span class="text-gray-200">${sym}${Number(price).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</span>`;
+    }
+
+    function fmtChange(pct, abs) {
+      if (pct == null) return '<span class="text-gray-600">—</span>';
+      const up = pct >= 0;
+      const color = up ? 'text-green-400' : 'text-red-400';
+      const arrow = up ? '▲' : '▼';
+      const sign  = up ? '+' : '';
+      const absPart = abs != null ? ` (${up ? '+' : ''}${abs.toFixed(2)})` : '';
+      return `<span class="${color} font-semibold">${arrow} ${sign}${pct.toFixed(2)}%<span class="font-normal text-xs opacity-70">${absPart}</span></span>`;
+    }
+
+    function marketBadge(state) {
+      if (!state || state === 'REGULAR' || state === 'UNKNOWN') return '';
+      const labels = { PRE:'pre-mkt', POST:'after-hrs', POSTPOST:'after-hrs', PREPRE:'pre-mkt', CLOSED:'closed' };
+      const label = labels[state] || state.toLowerCase();
+      return `<span class="ml-1 text-xs text-yellow-600 bg-yellow-900/30 px-1 py-0.5 rounded">${label}</span>`;
+    }
+
+    // Sector badge colours
+    const SECTOR_COLORS = {
+      'Technology': 'bg-blue-900 text-blue-300',
+      'Information Technology': 'bg-blue-900 text-blue-300',
+      'Communication Services': 'bg-purple-900 text-purple-300',
+      'Consumer Discretionary': 'bg-orange-900 text-orange-300',
+      'Consumer Staples': 'bg-yellow-900 text-yellow-300',
+      'Health Care': 'bg-green-900 text-green-300',
+      'Healthcare': 'bg-green-900 text-green-300',
+      'Financials': 'bg-emerald-900 text-emerald-300',
+      'Industrials': 'bg-gray-700 text-gray-300',
+      'Energy': 'bg-red-900 text-red-300',
+      'Materials': 'bg-lime-900 text-lime-300',
+      'Real Estate': 'bg-teal-900 text-teal-300',
+      'Utilities': 'bg-cyan-900 text-cyan-300',
+    };
+
+    function sectorBadge(sector) {
+      const cls = SECTOR_COLORS[sector] || 'bg-gray-800 text-gray-400';
+      return `<span class="text-xs px-1.5 py-0.5 rounded ${cls}">${escHtml(sector)}</span>`;
+    }
+
+    function renderResults(result) {
+      const combined = result.combined_tickers || [];
+      const accounts = result.accounts_analyzed || [];
+
+      // Meta bar
+      const settings = result.scan_settings || {};
+      let metaParts = [
+        `${accounts.length} account(s)`,
+        `${combined.length} unique ticker(s)`,
+        `max ${settings.max_posts || 10} posts`,
+      ];
+      if (settings.since_date) metaParts.push(`since ${settings.since_date}`);
+      metaParts.push(new Date(result.run_at).toLocaleString());
+      document.getElementById('metaBar').textContent = metaParts.join(' · ');
+
+      // Combined ranked table
+      const tbody = document.getElementById('combinedTable');
+      if (combined.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-gray-600">No US stock tickers found</td></tr>`;
+      } else {
+        tbody.innerHTML = combined.map((t, i) => {
+          const accs = Object.keys(t.sources || {}).map(a => `@${a}`).join(', ');
+          return `<tr class="border-b border-gray-800 hover:bg-gray-800/40 transition-colors">
+            <td class="px-4 py-3 text-gray-600">${i + 1}</td>
+            <td class="px-4 py-3 font-bold text-green-400 text-base">$${escHtml(t.ticker)}${marketBadge(t.market_state)}</td>
+            <td class="px-4 py-3 text-sm">${fmtPrice(t.price, t.currency)}</td>
+            <td class="px-4 py-3 text-sm">${fmtChange(t.change_pct, t.change_abs)}</td>
+            <td class="px-4 py-3 text-gray-300 text-xs">${escHtml(t.company || '')}</td>
+            <td class="px-4 py-3">${sectorBadge(t.sector || 'Unknown')}</td>
+            <td class="px-4 py-3 text-white font-semibold">${t.total_mentions}</td>
+            <td class="px-4 py-3 text-gray-500 text-xs">${accs}</td>
+          </tr>`;
+        }).join('');
+      }
+
+      // By Sector view
+      const sectorDiv = document.getElementById('view-sector');
+      sectorDiv.innerHTML = '';
+      const bySector = result.by_sector || {};
+      const sectorNames = Object.keys(bySector).sort();
+      if (sectorNames.length === 0) {
+        sectorDiv.innerHTML = `<div class="text-gray-600 text-xs py-6 text-center">No sector data available</div>`;
+      } else {
+        sectorDiv.innerHTML = sectorNames.map(sector => {
+          const items = bySector[sector];
+          const rows = items.map(t => `
+            <tr class="border-b border-gray-800 hover:bg-gray-800/30">
+              <td class="px-4 py-2.5 font-bold text-green-400">$${escHtml(t.ticker)}${marketBadge(t.market_state)}</td>
+              <td class="px-4 py-2.5 text-gray-300 text-xs">${escHtml(t.company || '')}</td>
+              <td class="px-4 py-2.5 text-gray-400 text-xs">${escHtml(t.industry || '')}</td>
+              <td class="px-4 py-2.5">${fmtPrice(t.price, 'USD')}</td>
+              <td class="px-4 py-2.5">${fmtChange(t.change_pct, null)}</td>
+              <td class="px-4 py-2.5 text-white">${t.total_mentions}</td>
+            </tr>`).join('');
+          return `<div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <div class="px-4 py-2.5 border-b border-gray-800 flex items-center gap-2">
+              ${sectorBadge(sector)}
+              <span class="text-gray-500 text-xs">${items.length} ticker(s)</span>
+            </div>
+            <table class="w-full">
+              <thead><tr class="text-gray-600 text-xs uppercase tracking-wider">
+                <th class="text-left px-4 py-2">Ticker</th>
+                <th class="text-left px-4 py-2">Company</th>
+                <th class="text-left px-4 py-2">Industry</th>
+                <th class="text-left px-4 py-2">Price</th>
+                <th class="text-left px-4 py-2">Change</th>
+                <th class="text-left px-4 py-2">Mentions</th>
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>`;
+        }).join('');
+      }
+
+      // Per-account results
+      const accountDiv = document.getElementById('accountResults');
+      accountDiv.innerHTML = '';
+      for (const [username, data] of Object.entries(result.results)) {
+        if (data.error) {
+          accountDiv.innerHTML += `<div class="bg-gray-900 border border-red-900/60 rounded-xl p-4">
+            <div class="font-bold text-red-400 mb-1">@${escHtml(username)}</div>
+            <p class="text-gray-500 text-xs">${escHtml(data.error)}</p>
+          </div>`;
+          continue;
+        }
+
+        let tickerRows = '';
+        if (!data.tickers || data.tickers.length === 0) {
+          tickerRows = `<tr><td colspan="4" class="px-4 py-6 text-center text-gray-600 text-xs">No tickers found</td></tr>`;
+        } else {
+          tickerRows = data.tickers.map(t => {
+            const snippets = t.occurrences.map(o => {
+              const dateStr = o.posted_at ? `<span class="text-gray-600">${fmtDate(o.posted_at)}</span> · ` : '';
+              return `<div class="border-l-2 border-gray-700 pl-2 mb-1.5 last:mb-0">
+                <span class="text-gray-500 text-xs">Post #${o.post_index} ${dateStr}</span>
+                <span class="text-gray-400 text-xs">"${escHtml(o.snippet)}"</span>
+              </div>`;
+            }).join('');
+            return `<tr class="border-b border-gray-800">
+              <td class="px-4 py-3 align-top">
+                <div class="font-bold text-green-400 text-base">$${escHtml(t.ticker)}${marketBadge(t.market_state)}</div>
+                <div class="mt-1">${fmtPrice(t.price, t.currency)}</div>
+                <div class="mt-0.5">${fmtChange(t.change_pct, t.change_abs)}</div>
+              </td>
+              <td class="px-4 py-3 align-top">
+                <div class="text-gray-300 text-xs mb-1">${escHtml(t.company || '')}</div>
+                ${sectorBadge(t.sector || 'Unknown')}
+                <div class="text-gray-500 text-xs mt-1">${escHtml(t.industry || '')}</div>
+              </td>
+              <td class="px-4 py-3 align-top text-white font-semibold">${t.mentions}</td>
+              <td class="px-4 py-3 align-top">${snippets}</td>
+            </tr>`;
+          }).join('');
+        }
+
+        accountDiv.innerHTML += `<div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+            <span class="font-bold text-white">@${escHtml(username)}</span>
+            <div class="flex items-center gap-2">
+              <span class="text-gray-600 text-xs">${data.posts_analyzed} posts</span>
+              ${data.stopped_by === 'date' ? '<span class="text-xs text-yellow-700 bg-yellow-900/30 px-1.5 py-0.5 rounded">stopped: date cutoff</span>' : ''}
+              ${data.stopped_by === 'count' ? '<span class="text-xs text-blue-700 bg-blue-900/30 px-1.5 py-0.5 rounded">stopped: post limit</span>' : ''}
+              ${data.stopped_by === 'end_of_timeline' ? '<span class="text-xs text-gray-700 bg-gray-800 px-1.5 py-0.5 rounded">reached end</span>' : ''}
+            </div>
+          </div>
+          <table class="w-full">
+            <thead><tr class="text-gray-600 text-xs uppercase tracking-wider">
+              <th class="text-left px-4 py-2.5">Ticker / Price</th>
+              <th class="text-left px-4 py-2.5">Sector / Company</th>
+              <th class="text-left px-4 py-2.5">Mentions</th>
+              <th class="text-left px-4 py-2.5">Post Snippets</th>
+            </tr></thead>
+            <tbody>${tickerRows}</tbody>
+          </table>
+        </div>`;
+      }
+
+      document.getElementById('results').classList.remove('hidden');
+      document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function downloadJSON() {
+      if (!currentResult) return;
+      const blob = new Blob([JSON.stringify(currentResult.result, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = currentResult.saved_as || 'x-tickers.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function escHtml(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+  </script>
+</body>
+</html>

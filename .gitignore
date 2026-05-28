@@ -1,0 +1,16 @@
+# credentials — never commit
+.env
+session.json
+
+# virtual environment
+venv/
+
+# cached data and run output
+data/
+output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
