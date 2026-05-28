@@ -17,6 +17,14 @@ SESSION_FILE = Path(__file__).parent / "session.json"
 _USERNAME_RE = re.compile(r'^[A-Za-z0-9_]{1,50}$')
 
 
+def _emit(progress, msg: dict) -> None:
+    if progress:
+        try:
+            progress(msg)
+        except Exception:
+            pass
+
+
 class InteractiveLoginRequired(Exception):
     """
     Raised when X demands interactive verification (unusual-activity check or
@@ -229,12 +237,14 @@ async def scrape_accounts(
     usernames: list,
     count: int = 10,
     since_date: Optional[datetime] = None,
+    progress=None,
 ) -> dict:
     """
     Scrape posts from multiple X accounts.
     - usernames: already-validated list (no @ prefix, alphanumeric/underscore only)
     - count: max posts per account (1–200)
     - since_date: stop collecting posts older than this UTC datetime
+    - progress: optional callable(dict) for real-time progress events
 
     NOTE: This function uses asyncio.run() from the Flask route, which works
     with Flask's default synchronous WSGI server.  Do not upgrade to async Flask
@@ -250,6 +260,8 @@ async def scrape_accounts(
 
     count = max(1, min(count, 200))
     results: dict = {}
+
+    _emit(progress, {"type": "start", "message": f"Starting scan for {len(usernames)} account(s)..."})
 
     async with async_playwright() as pw:
         headless = SESSION_FILE.exists()
@@ -273,21 +285,30 @@ async def scrape_accounts(
                 context = await browser.new_context(viewport={"width": 1280, "height": 900})
                 page = await context.new_page()
 
+            _emit(progress, {"type": "progress", "message": "Logging in to X..."})
             await _login(page, x_user, x_pass)
             await context.storage_state(path=str(SESSION_FILE))
         else:
             print("[✓] Using cached session")
+            _emit(progress, {"type": "progress", "message": "Using cached X session"})
 
         for username in usernames:
             depth_msg = f"up to {count} posts"
             if since_date:
                 depth_msg += f" since {since_date.strftime('%Y-%m-%d')}"
             print(f"[→] @{username} — fetching {depth_msg}...")
+            _emit(progress, {"type": "account_start", "username": username,
+                             "message": f"Scanning @{username} ({depth_msg})..."})
             try:
                 result = await _fetch_posts(page, username, count=count, since_date=since_date)
                 n = len(result["posts"])
                 reason = result["stopped_by"]
                 print(f"[✓] @{username}: {n} posts (stopped: {reason})")
+                _emit(progress, {
+                    "type": "account_done", "username": username,
+                    "posts": n, "stopped_by": reason,
+                    "message": f"@{username}: {n} posts ({reason.replace('_', ' ')})",
+                })
                 results[username] = {
                     "posts": result["posts"],
                     "stopped_by": reason,
@@ -295,9 +316,12 @@ async def scrape_accounts(
                 }
             except (ValueError, InteractiveLoginRequired) as exc:
                 results[username] = {"posts": [], "stopped_by": None, "error": str(exc)}
+                _emit(progress, {"type": "account_error", "username": username, "message": str(exc)})
                 print(f"[✗] {exc}")
             except Exception as exc:
                 results[username] = {"posts": [], "stopped_by": None, "error": f"Unexpected error: {exc}"}
+                _emit(progress, {"type": "account_error", "username": username,
+                                 "message": f"@{username}: Unexpected error: {exc}"})
                 print(f"[✗] @{username}: {exc}")
 
             await asyncio.sleep(1.5)

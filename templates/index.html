@@ -32,6 +32,30 @@
       <textarea id="usernames" rows="4"
         placeholder="One username per line, or comma-separated:&#10;&#10;chamath&#10;unusual_whales, Mr_Derivatives"
         class="w-full bg-gray-800 text-gray-100 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:border-blue-500 resize-none placeholder-gray-600 leading-relaxed"></textarea>
+
+      <!-- Watchlists -->
+      <div class="mt-3 pt-3 border-t border-gray-800">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-gray-600 text-xs uppercase tracking-wider">Saved</span>
+          <div id="watchlistChips" class="flex flex-wrap gap-1.5"></div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button type="button" id="saveWlBtn" onclick="showSaveWatchlist()"
+            class="text-xs text-gray-600 hover:text-gray-300 border border-gray-800 hover:border-gray-600 px-2.5 py-1 rounded-lg transition-colors">
+            + Save current
+          </button>
+          <div id="saveWlInline" class="hidden flex items-center gap-2">
+            <input id="watchlistNameInput" type="text" maxlength="50" placeholder="Name..."
+              onkeydown="if(event.key==='Enter')confirmSaveWatchlist();if(event.key==='Escape')hideSaveWatchlist();"
+              class="bg-gray-800 text-gray-200 border border-gray-700 rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:border-blue-500 w-40" />
+            <button type="button" onclick="confirmSaveWatchlist()"
+              class="text-xs text-blue-400 hover:text-blue-300 px-2 py-1 transition-colors">Save</button>
+            <button type="button" onclick="hideSaveWatchlist()"
+              class="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors">Cancel</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Depth controls -->
       <div class="flex flex-wrap items-center gap-4 mt-4 pt-4 border-t border-gray-800">
         <div class="flex items-center gap-2">
@@ -54,19 +78,24 @@
         </div>
       </div>
 
-      <div class="flex items-center gap-4 mt-4">
+      <div class="mt-4">
         <button id="scrapeBtn" onclick="runScrape()"
           class="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white px-6 py-2 rounded-lg font-semibold text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
           Scan Accounts
         </button>
-        <div id="spinner" class="hidden flex items-center gap-2 text-gray-400 text-xs">
-          <svg class="animate-spin h-4 w-4 text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
-          </svg>
-          <span id="spinnerText">Scraping + sector lookup…</span>
-        </div>
       </div>
+    </div>
+
+    <!-- Progress area -->
+    <div id="progressArea" class="hidden bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
+      <div class="flex items-center gap-2 mb-2">
+        <svg class="animate-spin h-4 w-4 text-blue-400 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+        </svg>
+        <span id="progressStatus" class="text-gray-200 text-sm font-semibold">Connecting...</span>
+      </div>
+      <div id="progressLog" class="mt-1.5 space-y-0.5 text-xs max-h-40 overflow-y-auto"></div>
     </div>
 
     <!-- Error -->
@@ -151,6 +180,209 @@
 
   <script>
     let currentResult = null;
+    let currentES = null;
+
+    // ── Scan ──────────────────────────────────────────────────────────────────
+
+    async function runScrape() {
+      const usernames = document.getElementById('usernames').value.trim();
+      if (!usernames) return;
+
+      const count = parseInt(document.getElementById('postCount').value) || 10;
+      const since_date = document.getElementById('sinceDate').value || '';
+
+      if (currentES) { currentES.close(); currentES = null; }
+
+      const btn = document.getElementById('scrapeBtn');
+      btn.disabled = true;
+      btn.textContent = 'Scanning...';
+
+      document.getElementById('progressArea').classList.remove('hidden');
+      document.getElementById('progressLog').innerHTML = '';
+      setProgressStatus('Connecting...', false);
+      document.getElementById('results').classList.add('hidden');
+      document.getElementById('errorBox').classList.add('hidden');
+
+      let data;
+      try {
+        const resp = await fetch('/scrape', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ usernames, count, since_date }),
+        });
+        data = await resp.json();
+      } catch (e) {
+        showError('Could not start scan: ' + e.message);
+        resetScanBtn();
+        return;
+      }
+
+      if (data.error) {
+        showError(data.error);
+        resetScanBtn();
+        return;
+      }
+
+      currentES = new EventSource('/scan/stream/' + data.scan_id);
+      currentES.onmessage = (ev) => handleProgressEvent(JSON.parse(ev.data));
+      currentES.onerror = () => {
+        if (currentES && currentES.readyState === EventSource.CLOSED) return;
+        showError('Stream connection lost. The scan may still be running in the background.');
+        resetScanBtn();
+      };
+    }
+
+    function handleProgressEvent(msg) {
+      switch (msg.type) {
+        case 'ping':
+          break;
+
+        case 'start':
+          setProgressStatus(msg.message, true);
+          addLog('→ ' + msg.message, 'gray');
+          break;
+
+        case 'progress':
+          setProgressStatus(msg.message, true);
+          addLog('→ ' + msg.message, 'gray');
+          break;
+
+        case 'account_start':
+          setProgressStatus(msg.message, true);
+          addLog('→ ' + msg.message, 'blue');
+          break;
+
+        case 'account_done':
+          addLog('✓ ' + msg.message, 'green');
+          break;
+
+        case 'account_error':
+          addLog('✗ ' + msg.message, 'red');
+          break;
+
+        case 'done':
+          if (currentES) { currentES.close(); currentES = null; }
+          document.getElementById('progressArea').classList.add('hidden');
+          currentResult = msg;
+          renderResults(msg.result);
+          resetScanBtn();
+          break;
+
+        case 'error':
+          if (currentES) { currentES.close(); currentES = null; }
+          document.getElementById('progressArea').classList.add('hidden');
+          showError(msg.message);
+          resetScanBtn();
+          break;
+      }
+    }
+
+    function setProgressStatus(text, spinning) {
+      document.getElementById('progressStatus').textContent = text;
+    }
+
+    function addLog(text, color) {
+      const log = document.getElementById('progressLog');
+      const cls = { gray: 'text-gray-500', blue: 'text-blue-400', green: 'text-green-400', red: 'text-red-400' };
+      const div = document.createElement('div');
+      div.className = cls[color] || 'text-gray-500';
+      div.textContent = text;
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function resetScanBtn() {
+      const btn = document.getElementById('scrapeBtn');
+      btn.disabled = false;
+      btn.textContent = 'Scan Accounts';
+    }
+
+    // ── Watchlists ────────────────────────────────────────────────────────────
+
+    async function loadWatchlists() {
+      try {
+        const resp = await fetch('/watchlists');
+        renderWatchlistChips(await resp.json());
+      } catch (e) { /* silently ignore */ }
+    }
+
+    function renderWatchlistChips(wl) {
+      const container = document.getElementById('watchlistChips');
+      const names = Object.keys(wl);
+      if (names.length === 0) {
+        container.innerHTML = '<span class="text-gray-700 text-xs italic">none yet</span>';
+        return;
+      }
+      container.innerHTML = names.map(name => {
+        const accounts = wl[name];
+        return `<span class="inline-flex items-center bg-gray-800 border border-gray-700 rounded-full text-xs">
+          <button type="button"
+            data-accounts="${escAttr(JSON.stringify(accounts))}"
+            onclick="loadWatchlist(JSON.parse(this.dataset.accounts))"
+            class="px-2.5 py-1 text-gray-300 hover:text-white transition-colors rounded-l-full">
+            ${escHtml(name)}<span class="text-gray-600 ml-1">${accounts.length}</span>
+          </button>
+          <button type="button"
+            data-name="${escAttr(name)}"
+            onclick="deleteWatchlist(this.dataset.name)"
+            class="pr-2 pl-1 py-1 text-gray-700 hover:text-red-400 transition-colors rounded-r-full">×</button>
+        </span>`;
+      }).join('');
+    }
+
+    function loadWatchlist(accounts) {
+      document.getElementById('usernames').value = accounts.join('\n');
+    }
+
+    function showSaveWatchlist() {
+      document.getElementById('saveWlBtn').classList.add('hidden');
+      document.getElementById('saveWlInline').classList.remove('hidden');
+      document.getElementById('watchlistNameInput').focus();
+    }
+
+    function hideSaveWatchlist() {
+      document.getElementById('saveWlBtn').classList.remove('hidden');
+      document.getElementById('saveWlInline').classList.add('hidden');
+      document.getElementById('watchlistNameInput').value = '';
+    }
+
+    async function confirmSaveWatchlist() {
+      const name = document.getElementById('watchlistNameInput').value.trim();
+      if (!name) return;
+
+      const usernamesText = document.getElementById('usernames').value.trim();
+      if (!usernamesText) {
+        showError('Enter some accounts in the textarea first.');
+        return;
+      }
+
+      const accounts = usernamesText.replace(/,/g, '\n').split('\n')
+        .map(s => s.trim().replace(/^@/, '')).filter(Boolean);
+
+      try {
+        const resp = await fetch('/watchlists', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, accounts }),
+        });
+        const data = await resp.json();
+        if (data.error) { showError(data.error); return; }
+        hideSaveWatchlist();
+        loadWatchlists();
+      } catch (e) {
+        showError('Failed to save watchlist: ' + e.message);
+      }
+    }
+
+    async function deleteWatchlist(name) {
+      if (!confirm(`Delete watchlist "${name}"?`)) return;
+      try {
+        await fetch('/watchlists/' + encodeURIComponent(name), { method: 'DELETE' });
+        loadWatchlists();
+      } catch (e) { /* ignore */ }
+    }
+
+    // ── Results rendering ─────────────────────────────────────────────────────
 
     function switchTab(tab) {
       document.getElementById('view-ranked').classList.toggle('hidden', tab !== 'ranked');
@@ -161,42 +393,6 @@
       document.getElementById('tab-sector').className = tab === 'sector'
         ? 'tab-active border-b-2 px-1 pb-2 text-sm font-semibold transition-colors'
         : 'tab-inactive border-b-2 px-1 pb-2 text-sm font-semibold transition-colors';
-    }
-
-    async function runScrape() {
-      const usernames = document.getElementById('usernames').value.trim();
-      if (!usernames) return;
-
-      const count = parseInt(document.getElementById('postCount').value) || 10;
-      const since_date = document.getElementById('sinceDate').value || '';
-
-      const btn = document.getElementById('scrapeBtn');
-      btn.disabled = true;
-      document.getElementById('spinner').classList.remove('hidden');
-      document.getElementById('results').classList.add('hidden');
-      document.getElementById('errorBox').classList.add('hidden');
-
-      // Contextual spinner message
-      let msg = `Scanning up to ${count} posts`;
-      if (since_date) msg += ` since ${since_date}`;
-      msg += ' — may take a while for large scans…';
-      document.getElementById('spinnerText').textContent = msg;
-
-      try {
-        const resp = await fetch('/scrape', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ usernames, count, since_date }),
-        });
-        const data = await resp.json();
-        if (data.error) showError(data.error);
-        else { currentResult = data; renderResults(data.result); }
-      } catch (e) {
-        showError('Request failed: ' + e.message);
-      } finally {
-        btn.disabled = false;
-        document.getElementById('spinner').classList.add('hidden');
-      }
     }
 
     function showError(msg) {
@@ -226,7 +422,7 @@
       const color = up ? 'text-green-400' : 'text-red-400';
       const arrow = up ? '▲' : '▼';
       const sign  = up ? '+' : '';
-      const absPart = abs != null ? ` (${up ? '+' : ''}${abs.toFixed(2)})` : '';
+      const absPart = abs != null ? ` (${up ? '+' : ''}${Number(abs).toFixed(2)})` : '';
       return `<span class="${color} font-semibold">${arrow} ${sign}${pct.toFixed(2)}%<span class="font-normal text-xs opacity-70">${absPart}</span></span>`;
     }
 
@@ -237,7 +433,6 @@
       return `<span class="ml-1 text-xs text-yellow-600 bg-yellow-900/30 px-1 py-0.5 rounded">${label}</span>`;
     }
 
-    // Sector badge colours
     const SECTOR_COLORS = {
       'Technology': 'bg-blue-900 text-blue-300',
       'Information Technology': 'bg-blue-900 text-blue-300',
@@ -263,7 +458,6 @@
       const combined = result.combined_tickers || [];
       const accounts = result.accounts_analyzed || [];
 
-      // Meta bar
       const settings = result.scan_settings || {};
       let metaParts = [
         `${accounts.length} account(s)`,
@@ -274,10 +468,9 @@
       metaParts.push(new Date(result.run_at).toLocaleString());
       document.getElementById('metaBar').textContent = metaParts.join(' · ');
 
-      // Combined ranked table
       const tbody = document.getElementById('combinedTable');
       if (combined.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-gray-600">No US stock tickers found</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" class="px-4 py-8 text-center text-gray-600">No US stock tickers found</td></tr>`;
       } else {
         tbody.innerHTML = combined.map((t, i) => {
           const accs = Object.keys(t.sources || {}).map(a => `@${a}`).join(', ');
@@ -289,12 +482,11 @@
             <td class="px-4 py-3 text-gray-300 text-xs">${escHtml(t.company || '')}</td>
             <td class="px-4 py-3">${sectorBadge(t.sector || 'Unknown')}</td>
             <td class="px-4 py-3 text-white font-semibold">${t.total_mentions}</td>
-            <td class="px-4 py-3 text-gray-500 text-xs">${accs}</td>
+            <td class="px-4 py-3 text-gray-500 text-xs">${escHtml(accs)}</td>
           </tr>`;
         }).join('');
       }
 
-      // By Sector view
       const sectorDiv = document.getElementById('view-sector');
       sectorDiv.innerHTML = '';
       const bySector = result.by_sector || {};
@@ -333,7 +525,6 @@
         }).join('');
       }
 
-      // Per-account results
       const accountDiv = document.getElementById('accountResults');
       accountDiv.innerHTML = '';
       for (const [username, data] of Object.entries(result.results)) {
@@ -416,6 +607,15 @@
         .replace(/&/g, '&amp;').replace(/</g, '&lt;')
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
+
+    function escAttr(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // ── Init ──────────────────────────────────────────────────────────────────
+    loadWatchlists();
   </script>
 </body>
 </html>

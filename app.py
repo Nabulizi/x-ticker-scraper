@@ -1,12 +1,16 @@
 import asyncio
 import json
+import os
+import queue
 import re
+import tempfile
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory, stream_with_context
 
 from price_lookup import lookup_prices
 from scraper import InteractiveLoginRequired, scrape_accounts, validate_username
@@ -19,10 +23,16 @@ load_dotenv()
 app = Flask(__name__)
 OUTPUT_DIR = Path(__file__).parent / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
+WATCHLISTS_FILE = Path(__file__).parent / "data" / "watchlists.json"
 
 # Thread-safe lazy-loaded ticker DB (double-checked locking)
 _tickers_db = None
 _tickers_db_lock = threading.Lock()
+
+# In-progress scan registry  {scan_id: {"queue": Queue, "final": dict|None}}
+_scans: dict = {}
+_scans_lock = threading.Lock()
+MAX_SCANS = 20
 
 
 def get_tickers_db() -> set:
@@ -33,6 +43,29 @@ def get_tickers_db() -> set:
         if _tickers_db is None:
             _tickers_db = load_tickers()
     return _tickers_db
+
+
+def _register_scan(scan_id: str, q: queue.Queue) -> None:
+    with _scans_lock:
+        _scans[scan_id] = {"queue": q, "final": None}
+        if len(_scans) > MAX_SCANS:
+            oldest = next(iter(_scans))
+            del _scans[oldest]
+
+
+def _load_watchlists() -> dict:
+    if WATCHLISTS_FILE.exists():
+        try:
+            with open(WATCHLISTS_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_watchlists(data: dict) -> None:
+    WATCHLISTS_FILE.parent.mkdir(exist_ok=True)
+    _write_json_atomic(WATCHLISTS_FILE, data)
 
 
 @app.route("/")
@@ -86,109 +119,169 @@ def scrape():
         except ValueError:
             return jsonify({"error": f"Invalid since_date '{since_raw}'. Use YYYY-MM-DD."}), 400
 
-    # NOTE: asyncio.run() blocks this WSGI thread for the duration of the scrape.
-    # This is intentional for Flask's default synchronous server.  Do not switch
-    # to async Flask or an ASGI server without refactoring scrape_accounts.
-    try:
-        scraped = asyncio.run(scrape_accounts(valid_usernames, count=count, since_date=since_date))
-    except InteractiveLoginRequired as exc:
-        return jsonify({"error": str(exc)}), 503
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    scan_id = str(uuid.uuid4())
+    q: queue.Queue = queue.Queue()
+    _register_scan(scan_id, q)
 
-    valid_tickers = get_tickers_db()
+    def run_scan():
+        def emit(msg: dict) -> None:
+            q.put(msg)
 
-    run: dict = {
-        "run_at": datetime.now(timezone.utc).isoformat(),  # always UTC
-        "accounts_analyzed": valid_usernames,
-        "scan_settings": {
-            "max_posts": count,
-            "since_date": since_raw or None,
-        },
-        "results": {},
-        "combined_tickers": [],
-        "by_sector": {},
-    }
+        try:
+            scraped = asyncio.run(
+                scrape_accounts(valid_usernames, count=count, since_date=since_date, progress=emit)
+            )
+        except InteractiveLoginRequired as exc:
+            q.put({"type": "error", "message": str(exc)})
+            return
+        except Exception as exc:
+            q.put({"type": "error", "message": str(exc)})
+            return
 
-    combined: dict = {}
+        valid_tickers = get_tickers_db()
 
-    for username, data in scraped.items():
-        if data["error"]:
-            run["results"][username] = {
-                "posts_analyzed": 0,
-                "posts": [],
-                "tickers": [],
-                "error": data["error"],
-            }
-            continue
-
-        tickers = extract_tickers(data["posts"], valid_tickers)
-        run["results"][username] = {
-            "posts_analyzed": len(data["posts"]),
-            "stopped_by": data.get("stopped_by"),
-            "posts": data["posts"],
-            "tickers": tickers,
-            "error": None,
+        run: dict = {
+            "run_at": datetime.now(timezone.utc).isoformat(),
+            "accounts_analyzed": valid_usernames,
+            "scan_settings": {
+                "max_posts": count,
+                "since_date": since_raw or None,
+            },
+            "results": {},
+            "combined_tickers": [],
+            "by_sector": {},
         }
 
-        for t in tickers:
-            entry = combined.setdefault(
-                t["ticker"],
-                {"ticker": t["ticker"], "total_mentions": 0, "sources": {}},
-            )
-            entry["total_mentions"] += t["mentions"]
-            entry["sources"][username] = t["occurrences"]
+        combined: dict = {}
 
-    # Sector + price enrichment — fetched once against the deduplicated set
-    all_ticker_symbols = list(combined.keys())
-    sector_map = lookup_sectors(all_ticker_symbols) if all_ticker_symbols else {}
-    price_map  = lookup_prices(all_ticker_symbols)  if all_ticker_symbols else {}
+        for username, data in scraped.items():
+            if data["error"]:
+                run["results"][username] = {
+                    "posts_analyzed": 0,
+                    "posts": [],
+                    "tickers": [],
+                    "error": data["error"],
+                }
+                continue
 
-    def _enrich(t: dict) -> None:
-        sym = t["ticker"]
-        s = sector_map.get(sym, {})
-        p = price_map.get(sym, {})
-        t["sector"]       = s.get("sector",   "Unknown")
-        t["industry"]     = s.get("industry", "Unknown")
-        t["company"]      = s.get("company",  sym)
-        t["price"]        = p.get("price")
-        t["change_pct"]   = p.get("change_pct")
-        t["change_abs"]   = p.get("change_abs")
-        t["currency"]     = p.get("currency",     "USD")
-        t["market_state"] = p.get("market_state", "UNKNOWN")
+            tickers = extract_tickers(data["posts"], valid_tickers)
+            run["results"][username] = {
+                "posts_analyzed": len(data["posts"]),
+                "stopped_by": data.get("stopped_by"),
+                "posts": data["posts"],
+                "tickers": tickers,
+                "error": None,
+            }
 
-    for data in run["results"].values():
-        if not data["error"]:
-            for t in data["tickers"]:
-                _enrich(t)
+            for t in tickers:
+                entry = combined.setdefault(
+                    t["ticker"],
+                    {"ticker": t["ticker"], "total_mentions": 0, "sources": {}},
+                )
+                entry["total_mentions"] += t["mentions"]
+                entry["sources"][username] = t["occurrences"]
 
-    combined_list = sorted(combined.values(), key=lambda x: -x["total_mentions"])
-    for entry in combined_list:
-        _enrich(entry)
+        all_ticker_symbols = list(combined.keys())
 
-    run["combined_tickers"] = combined_list
+        if all_ticker_symbols:
+            emit({"type": "progress",
+                  "message": f"Looking up sector data for {len(all_ticker_symbols)} ticker(s)..."})
+            sector_map = lookup_sectors(all_ticker_symbols)
+            emit({"type": "progress",
+                  "message": f"Fetching prices for {len(all_ticker_symbols)} ticker(s)..."})
+            price_map = lookup_prices(all_ticker_symbols)
+        else:
+            sector_map = {}
+            price_map = {}
 
-    by_sector: dict = {}
-    for entry in combined_list:
-        sector = entry.get("sector", "Unknown")
-        by_sector.setdefault(sector, []).append({
-            "ticker":         entry["ticker"],
-            "company":        entry["company"],
-            "industry":       entry["industry"],
-            "total_mentions": entry["total_mentions"],
-            "price":          entry.get("price"),
-            "change_pct":     entry.get("change_pct"),
-            "market_state":   entry.get("market_state"),
-        })
-    run["by_sector"] = dict(sorted(by_sector.items()))
+        def _enrich(t: dict) -> None:
+            sym = t["ticker"]
+            s = sector_map.get(sym, {})
+            p = price_map.get(sym, {})
+            t["sector"]       = s.get("sector",   "Unknown")
+            t["industry"]     = s.get("industry", "Unknown")
+            t["company"]      = s.get("company",  sym)
+            t["price"]        = p.get("price")
+            t["change_pct"]   = p.get("change_pct")
+            t["change_abs"]   = p.get("change_abs")
+            t["currency"]     = p.get("currency",     "USD")
+            t["market_state"] = p.get("market_state", "UNKNOWN")
 
-    # Persist to disk (atomic write via write_json_atomic in tickers_db)
-    slug = "_".join(valid_usernames[:3])
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    filename = f"{ts}_{slug}.json"
-    _write_json_atomic(OUTPUT_DIR / filename, run)
+        for data in run["results"].values():
+            if not data["error"]:
+                for t in data["tickers"]:
+                    _enrich(t)
 
-    return jsonify({"result": run, "saved_as": filename})
+        combined_list = sorted(combined.values(), key=lambda x: -x["total_mentions"])
+        for entry in combined_list:
+            _enrich(entry)
+
+        run["combined_tickers"] = combined_list
+
+        by_sector: dict = {}
+        for entry in combined_list:
+            sector = entry.get("sector", "Unknown")
+            by_sector.setdefault(sector, []).append({
+                "ticker":         entry["ticker"],
+                "company":        entry["company"],
+                "industry":       entry["industry"],
+                "total_mentions": entry["total_mentions"],
+                "price":          entry.get("price"),
+                "change_pct":     entry.get("change_pct"),
+                "market_state":   entry.get("market_state"),
+            })
+        run["by_sector"] = dict(sorted(by_sector.items()))
+
+        slug = "_".join(valid_usernames[:3])
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"{ts}_{slug}.json"
+        _write_json_atomic(OUTPUT_DIR / filename, run)
+
+        done_msg = {"type": "done", "result": run, "saved_as": filename}
+        with _scans_lock:
+            if scan_id in _scans:
+                _scans[scan_id]["final"] = done_msg
+        q.put(done_msg)
+
+    threading.Thread(target=run_scan, daemon=True).start()
+    return jsonify({"scan_id": scan_id})
+
+
+@app.route("/scan/stream/<scan_id>")
+def scan_stream(scan_id):
+    with _scans_lock:
+        scan = _scans.get(scan_id)
+
+    if not scan:
+        def not_found():
+            yield 'data: {"type":"error","message":"Scan not found or expired"}\n\n'
+        return Response(not_found(), mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    # Reconnecting client — scan already finished
+    if scan.get("final"):
+        final = scan["final"]
+        def immediate():
+            yield f"data: {json.dumps(final)}\n\n"
+        return Response(immediate(), mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    def generate():
+        q = scan["queue"]
+        while True:
+            try:
+                msg = q.get(timeout=30)
+                yield f"data: {json.dumps(msg)}\n\n"
+                if msg.get("type") in ("done", "error"):
+                    break
+            except queue.Empty:
+                yield 'data: {"type":"ping"}\n\n'
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.route("/results/<path:filename>")
@@ -198,9 +291,52 @@ def view_result(filename):
     return send_from_directory(OUTPUT_DIR, filename, mimetype="application/json")
 
 
-def _write_json_atomic(path: Path, data: dict) -> None:
+@app.route("/watchlists", methods=["GET"])
+def get_watchlists():
+    return jsonify(_load_watchlists())
+
+
+@app.route("/watchlists", methods=["POST"])
+def save_watchlist():
+    body = request.get_json(force=True)
+    name = str(body.get("name", "")).strip()
+    accounts = body.get("accounts", [])
+
+    if not name or len(name) > 50:
+        return jsonify({"error": "Watchlist name must be 1–50 characters"}), 400
+    if not re.match(r'^[A-Za-z0-9 _\-]{1,50}$', name):
+        return jsonify({"error": "Watchlist name: letters, digits, spaces, _ and - only"}), 400
+    if not accounts or not isinstance(accounts, list):
+        return jsonify({"error": "accounts must be a non-empty list"}), 400
+
+    valid_accounts = []
+    for a in accounts[:20]:
+        try:
+            valid_accounts.append(validate_username(str(a)))
+        except ValueError:
+            pass
+
+    if not valid_accounts:
+        return jsonify({"error": "No valid usernames in the list"}), 400
+
+    wl = _load_watchlists()
+    wl[name] = valid_accounts
+    _save_watchlists(wl)
+    return jsonify({"ok": True, "name": name, "accounts": valid_accounts})
+
+
+@app.route("/watchlists/<path:name>", methods=["DELETE"])
+def delete_watchlist(name):
+    wl = _load_watchlists()
+    if name not in wl:
+        return jsonify({"error": "Watchlist not found"}), 404
+    del wl[name]
+    _save_watchlists(wl)
+    return jsonify({"ok": True})
+
+
+def _write_json_atomic(path: Path, data) -> None:
     """Write JSON to a temp file then atomically rename — safe against crashes and races."""
-    import os, tempfile
     tmp_fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(tmp_fd, "w") as f:
