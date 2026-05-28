@@ -203,13 +203,23 @@ async def _fetch_posts(
             if not text or text in seen:
                 continue
 
+            # socialContext appears on pinned posts and retweets.
+            # Both bypass the date cutoff: pinned posts are intentionally promoted
+            # by the account owner regardless of age, and retweets carry the
+            # *original* post's datetime — filtering on that would stop the scrape
+            # before collecting genuinely recent content.
+            skip_date_cutoff = False
+            social_ctx = await article.query_selector('[data-testid="socialContext"]')
+            if social_ctx:
+                skip_date_cutoff = True
+
             time_el = await article.query_selector('time')
             posted_at = None
             if time_el:
                 posted_at = await time_el.get_attribute('datetime')
 
-            # Date cutoff check before adding to seen, so we don't miss the boundary
-            if since_date and posted_at:
+            # Date cutoff — only applied to original posts, not retweets
+            if since_date and posted_at and not skip_date_cutoff:
                 post_dt = _parse_iso(posted_at)
                 if post_dt and post_dt < since_date:
                     cutoff_hit = True
