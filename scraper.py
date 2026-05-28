@@ -189,7 +189,13 @@ async def _fetch_posts(
     seen: set = set()
     scrolls = 0
     stopped_by = "end_of_timeline"
+    last_old_date: Optional[str] = None  # most recent original post that was date-filtered
     MAX_SCROLLS = max(30, count // 3)
+    # Stop after this many consecutive old original posts without finding new content.
+    # Stopping on the very first old post is too aggressive — recent content can be
+    # interleaved further down the timeline.
+    MAX_OLD_SKIPS = 5
+    consecutive_old = 0
 
     while len(posts) < count and scrolls < MAX_SCROLLS:
         articles = await page.query_selector_all('article[data-testid="tweet"]')
@@ -218,14 +224,23 @@ async def _fetch_posts(
             if time_el:
                 posted_at = await time_el.get_attribute('datetime')
 
-            # Date cutoff — only applied to original posts, not retweets
+            # Date cutoff — only applied to original posts, not retweets/pinned.
+            # Skip old posts and keep going; only stop after MAX_OLD_SKIPS consecutive
+            # old original posts with no newer content found in between.
             if since_date and posted_at and not skip_date_cutoff:
                 post_dt = _parse_iso(posted_at)
                 if post_dt and post_dt < since_date:
-                    cutoff_hit = True
-                    stopped_by = "date"
-                    break
+                    seen.add(text)  # mark seen so we skip it on future scrolls too
+                    consecutive_old += 1
+                    if consecutive_old == 1:
+                        last_old_date = posted_at  # track most recent skipped date
+                    if consecutive_old >= MAX_OLD_SKIPS:
+                        cutoff_hit = True
+                        stopped_by = "date"
+                        break
+                    continue
 
+            consecutive_old = 0  # reset whenever we accept a post
             seen.add(text)
             posts.append({"text": text, "posted_at": posted_at})
 
@@ -240,7 +255,7 @@ async def _fetch_posts(
         await asyncio.sleep(1.3)
         scrolls += 1
 
-    return {"posts": posts, "stopped_by": stopped_by}
+    return {"posts": posts, "stopped_by": stopped_by, "last_post_date": last_old_date}
 
 
 async def scrape_accounts(
@@ -322,6 +337,7 @@ async def scrape_accounts(
                 results[username] = {
                     "posts": result["posts"],
                     "stopped_by": reason,
+                    "last_post_date": result.get("last_post_date"),
                     "error": None,
                 }
             except (ValueError, InteractiveLoginRequired) as exc:

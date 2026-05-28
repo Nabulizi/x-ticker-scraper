@@ -570,7 +570,8 @@
             <span class="font-bold text-white">@${escHtml(username)}</span>
             <div class="flex items-center gap-2">
               <span class="text-gray-600 text-xs">${data.posts_analyzed} posts</span>
-              ${data.stopped_by === 'date' ? '<span class="text-xs text-yellow-700 bg-yellow-900/30 px-1.5 py-0.5 rounded">stopped: date cutoff</span>' : ''}
+              ${data.stopped_by === 'date' ? '<span class="text-xs text-yellow-700 bg-yellow-900/30 px-1.5 py-0.5 rounded" title="No recent original posts found within the date range">stopped: date cutoff</span>' : ''}
+              ${data.stopped_by === 'date' && data.last_post_date ? `<span class="text-xs text-gray-600">last post ${fmtDate(data.last_post_date)}</span>` : ''}
               ${data.stopped_by === 'count' ? '<span class="text-xs text-blue-700 bg-blue-900/30 px-1.5 py-0.5 rounded">stopped: post limit</span>' : ''}
               ${data.stopped_by === 'end_of_timeline' ? '<span class="text-xs text-gray-700 bg-gray-800 px-1.5 py-0.5 rounded">reached end</span>' : ''}
             </div>

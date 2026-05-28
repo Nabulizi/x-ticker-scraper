@@ -168,6 +168,7 @@ def scrape():
             run["results"][username] = {
                 "posts_analyzed": len(data["posts"]),
                 "stopped_by": data.get("stopped_by"),
+                "last_post_date": data.get("last_post_date"),
                 "posts": data["posts"],
                 "tickers": tickers,
                 "error": None,
