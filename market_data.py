@@ -78,11 +78,24 @@ def _with_retry(fn, ticker):
     raise last if last else RuntimeError("unknown")
 
 
+def _yf_session():
+    """Return a curl_cffi (or requests) session with SSL verification disabled.
+    Needed when the local network uses a self-signed certificate proxy."""
+    try:
+        from curl_cffi import requests as cffi_requests  # yfinance's preferred backend
+        return cffi_requests.Session(verify=False)
+    except ImportError:
+        import requests as _req
+        s = _req.Session()
+        s.verify = False
+        return s
+
+
 def _fetch_price(ticker: str) -> dict:
     import yfinance as yf
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        fi = yf.Ticker(ticker).fast_info
+        fi = yf.Ticker(ticker, session=_yf_session()).fast_info
 
     def g(*names):
         for nm in names:
@@ -123,7 +136,7 @@ def _fetch_profile(ticker: str) -> dict:
     import yfinance as yf
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        info = yf.Ticker(ticker).info
+        info = yf.Ticker(ticker, session=_yf_session()).info
     sector = info.get("sector")
     industry = info.get("industry")
     company = info.get("shortName") or info.get("longName")

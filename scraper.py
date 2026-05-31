@@ -34,6 +34,15 @@ class InteractiveLoginRequired(Exception):
     """
 
 
+class SessionExpired(Exception):
+    """Raised when there is no valid cached session. Use /connect-x to log in."""
+
+
+def session_status() -> dict:
+    """Return whether a cached session file exists."""
+    return {"connected": SESSION_FILE.exists()}
+
+
 def validate_username(username: str) -> str:
     """Strip @ and assert the username matches X's allowed character set."""
     username = username.strip().lstrip("@")
@@ -45,93 +54,126 @@ def validate_username(username: str) -> str:
     return username
 
 
-async def _login(page, username: str, password: str) -> None:
+async def _do_login(page, username: str, password: str, email: str = "", progress=None) -> None:
+    """
+    Shared login logic for both headless and visible-browser paths.
+    Uses X's 2026 step-by-step flow: username → Next → password → Log in.
+    Auto-fills all fields from the supplied credentials.
+    """
     print("[→] Logging in to X...")
-    await page.goto("https://x.com/login", wait_until="domcontentloaded")
-    await asyncio.sleep(3)  # wait for React to mount the login form
+    # Use the direct login flow URL (avoids the onboarding modal redirect)
+    await page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded")
+    await asyncio.sleep(2)
 
-    # X's login form now shows username and password on the same page.
-    await page.wait_for_selector('input[name="username_or_email"]', state="attached", timeout=45000)
-    await page.fill('input[name="username_or_email"]', username)
-    await asyncio.sleep(0.5)
-    await page.wait_for_selector('input[name="password"]', state="attached", timeout=10000)
-    await page.fill('input[name="password"]', password)
-    await asyncio.sleep(0.5)
-    await page.keyboard.press("Enter")
-    await asyncio.sleep(3)
+    # Step 1: username / email field
+    try:
+        un_field = await page.wait_for_selector(
+            'input[autocomplete="username"], input[name="text"]',
+            state="visible", timeout=20000,
+        )
+        await un_field.fill(username)
+        await asyncio.sleep(0.4)
+    except PWTimeout:
+        raise RuntimeError("X login form did not appear — X may be temporarily blocking logins.")
 
-    # 2FA — same problem: cannot block on input() in an HTTP handler.
+    # Click the "Next" button
+    try:
+        next_btn = await page.wait_for_selector(
+            '[data-testid="LoginForm_Login_Button"], [role="button"]:has-text("Next")',
+            state="visible", timeout=8000,
+        )
+        await next_btn.click()
+    except PWTimeout:
+        await page.keyboard.press("Enter")
+    await asyncio.sleep(1.5)
+
+    # Unusual-activity prompt (asks for email/phone to verify identity)
+    try:
+        unusual = await page.wait_for_selector(
+            'input[data-testid="ocfEnterTextTextInput"]', state="visible", timeout=4000
+        )
+        val = email or username  # use X_EMAIL if set, else fall back to username
+        await unusual.fill(val)
+        await page.keyboard.press("Enter")
+        await asyncio.sleep(1.5)
+    except PWTimeout:
+        pass
+
+    # Step 2: password field
+    try:
+        pw_field = await page.wait_for_selector(
+            'input[name="password"], input[autocomplete="current-password"]',
+            state="visible", timeout=15000,
+        )
+        await pw_field.fill(password)
+        await asyncio.sleep(0.4)
+    except PWTimeout:
+        raise RuntimeError("Password field did not appear after entering username.")
+
+    # Click "Log in"
+    try:
+        login_btn = await page.wait_for_selector(
+            '[data-testid="LoginForm_Login_Button"], [role="button"]:has-text("Log in")',
+            state="visible", timeout=8000,
+        )
+        await login_btn.click()
+    except PWTimeout:
+        await page.keyboard.press("Enter")
+    await asyncio.sleep(2)
+
+    # 2FA prompt — auto-fill not supported; user must complete in the browser.
     try:
         await page.wait_for_selector(
-            'input[data-testid="LoginForm_2FA_Input"], input[name="text"]',
-            timeout=5000,
+            'input[data-testid="LoginForm_2FA_Input"]', state="visible", timeout=5000
         )
-        raise InteractiveLoginRequired(
-            "X is asking for a 2FA code. "
-            "Run `python3 -c \"import asyncio; from scraper import _manual_login; asyncio.run(_manual_login())\"` "
-            "from your terminal to complete login and cache the session, then retry."
-        )
+        _emit(progress, {
+            "type": "progress",
+            "message": "⚠️ X is asking for a 2FA code — please enter it in the browser window (up to 2 min).",
+        })
+        print("[!] 2FA prompt — waiting up to 2 min for manual completion...")
     except PWTimeout:
-        pass  # no 2FA prompt
+        pass
 
-    await page.wait_for_url("**/home", timeout=25000)
+    # Wait for successful redirect to home (up to 2 min covers manual 2FA)
+    await page.wait_for_url("**/home", timeout=120_000)
     print("[✓] Login successful")
+
+
+async def _login(page, username: str, password: str, progress=None) -> None:
+    x_email = os.getenv("X_EMAIL", "").strip()
+    await _do_login(page, username, password, email=x_email, progress=progress)
 
 
 async def _manual_login() -> None:
     """
-    Interactive login helper — run this directly from a terminal when X
-    demands verification that cannot be handled headlessly.
-    Saves the session so subsequent scrapes run headlessly.
+    Fully-automatic login using credentials from .env.
+    Opens a real Chrome window (avoids automation detection).
+    Saves session.json on success.
     """
     x_user = os.getenv("X_USERNAME", "").strip()
     x_pass = os.getenv("X_PASSWORD", "").strip()
+    x_email = os.getenv("X_EMAIL", "").strip()
     if not x_user or not x_pass:
         raise ValueError("Set X_USERNAME and X_PASSWORD in .env")
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=False, slow_mo=80)
+        for channel in ("chrome", None):
+            try:
+                kwargs = {"headless": False, "slow_mo": 80}
+                if channel:
+                    kwargs["channel"] = channel
+                browser = await pw.chromium.launch(**kwargs)
+                break
+            except Exception:
+                if channel is None:
+                    raise
+
         context = await browser.new_context(viewport={"width": 1280, "height": 900})
+        await context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
         page = await context.new_page()
-        await page.goto("https://x.com/login", wait_until="domcontentloaded")
-        await asyncio.sleep(3)  # wait for React to mount the login form
-
-        # X's login form now shows username and password on the same page.
-        await page.wait_for_selector('input[name="username_or_email"]', state="attached", timeout=45000)
-        await page.fill('input[name="username_or_email"]', x_user)
-        await asyncio.sleep(0.5)
-        await page.wait_for_selector('input[name="password"]', state="attached", timeout=10000)
-        await page.fill('input[name="password"]', x_pass)
-        await asyncio.sleep(0.5)
-        await page.keyboard.press("Enter")
-        await asyncio.sleep(3)
-
-        # Unusual-activity prompt — may appear after submit on some accounts
-        try:
-            unusual = await page.wait_for_selector(
-                'input[data-testid="ocfEnterTextTextInput"]', timeout=4000
-            )
-            val = input("[X] Unusual activity — enter your email or phone: ").strip()
-            await unusual.fill(val)
-            await page.keyboard.press("Enter")
-            await asyncio.sleep(1.5)
-        except PWTimeout:
-            pass
-
-        # 2FA prompt — fill interactively
-        try:
-            totp = await page.wait_for_selector(
-                'input[data-testid="LoginForm_2FA_Input"], input[name="text"]',
-                timeout=5000,
-            )
-            code = input("[X] Enter your 2FA code: ").strip()
-            await totp.fill(code)
-            await page.keyboard.press("Enter")
-            await asyncio.sleep(2)
-        except PWTimeout:
-            pass
-
-        await page.wait_for_url("**/home", timeout=25000)
+        await _do_login(page, x_user, x_pass, email=x_email)
         await context.storage_state(path=str(SESSION_FILE))
         await browser.close()
         print(f"[✓] Session saved to {SESSION_FILE}. You can now use the web app.")
@@ -347,50 +389,50 @@ async def scrape_accounts(
 
     Returns { username: { posts, stopped_by, error } }
     """
-    x_user = os.getenv("X_USERNAME", "").strip()
-    x_pass = os.getenv("X_PASSWORD", "").strip()
-
-    if not x_user or not x_pass:
-        raise ValueError("Set X_USERNAME and X_PASSWORD in your .env file")
-
     count = max(1, min(count, 200))
     results: dict = {}
 
     _emit(progress, {"type": "start", "message": f"Starting scan for {len(usernames)} account(s)..."})
 
     async with async_playwright() as pw:
-        headless = SESSION_FILE.exists()
-        browser = await pw.chromium.launch(headless=headless, slow_mo=60)
+        if not SESSION_FILE.exists():
+            raise SessionExpired(
+                "No X session found. Click 'Connect X Account' to log in first."
+            )
 
-        ctx_kwargs = {"viewport": {"width": 1280, "height": 900}}
-        if SESSION_FILE.exists():
-            ctx_kwargs["storage_state"] = str(SESSION_FILE)
-
+        browser = await pw.chromium.launch(headless=True, slow_mo=60)
+        ctx_kwargs = {
+            "viewport": {"width": 1280, "height": 900},
+            "storage_state": str(SESSION_FILE),
+        }
         context = await browser.new_context(**ctx_kwargs)
+        await context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
         page = await context.new_page()
 
         await page.goto("https://x.com/home", wait_until="domcontentloaded")
-        await asyncio.sleep(2)
 
-        # Detect login state by presence of the account-switcher button — more
-        # reliable than checking the URL because X redirects unauthenticated
-        # requests to https://x.com/ (not /login), which would bypass a URL check.
-        logged_in = await page.query_selector('[data-testid="SideNav_AccountSwitcher_Button"]')
+        # Wait up to 10 s for the account-switcher button — gives the page time
+        # to fully hydrate before we conclude the session is expired.
+        logged_in = None
+        try:
+            await page.wait_for_selector(
+                '[data-testid="SideNav_AccountSwitcher_Button"]', timeout=10000
+            )
+            logged_in = True
+        except PWTimeout:
+            logged_in = False
 
         if not logged_in:
-            if SESSION_FILE.exists():
-                SESSION_FILE.unlink()
-                await browser.close()
-                browser = await pw.chromium.launch(headless=False, slow_mo=60)
-                context = await browser.new_context(viewport={"width": 1280, "height": 900})
-                page = await context.new_page()
+            await browser.close()
+            SESSION_FILE.unlink(missing_ok=True)
+            raise SessionExpired(
+                "X session has expired. Click 'Connect X Account' to log in again."
+            )
 
-            _emit(progress, {"type": "progress", "message": "Logging in to X..."})
-            await _login(page, x_user, x_pass)
-            await context.storage_state(path=str(SESSION_FILE))
-        else:
-            print("[✓] Using cached session")
-            _emit(progress, {"type": "progress", "message": "Using cached X session"})
+        print("[✓] Using cached session")
+        _emit(progress, {"type": "progress", "message": "Using cached X session"})
 
         for username in usernames:
             depth_msg = f"up to {count} posts"
@@ -428,6 +470,8 @@ async def scrape_accounts(
 
             await asyncio.sleep(1.5)
 
+        # Persist any refreshed cookies so the session stays alive between runs
+        await context.storage_state(path=str(SESSION_FILE))
         await browser.close()
 
     return results

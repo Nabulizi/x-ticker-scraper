@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory, stream_with_context
 
 from price_lookup import lookup_prices
-from scraper import InteractiveLoginRequired, scrape_accounts, validate_username
+from scraper import InteractiveLoginRequired, SessionExpired, scrape_accounts, session_status, validate_username
 from sector_lookup import lookup_sectors
 from ticker_extractor import extract_tickers
 from tickers_db import load_tickers
@@ -86,6 +86,25 @@ def index():
     return render_template("index.html", recent_runs=recent)
 
 
+@app.route("/session-status")
+def get_session_status():
+    return jsonify(session_status())
+
+
+@app.route("/connect-x", methods=["POST"])
+def connect_x():
+    """
+    Opens a visible Playwright browser so the user can log in to X once.
+    Saves session.json on success.  Runs synchronously (blocks until done or error).
+    """
+    from scraper import _manual_login  # local import to avoid circular ref at module load
+    try:
+        asyncio.run(_manual_login())
+        return jsonify({"ok": True, "message": "Connected successfully. You can now run scans."})
+    except Exception as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 500
+
+
 @app.route("/scrape", methods=["POST"])
 def scrape():
     body = request.get_json(force=True)
@@ -136,8 +155,8 @@ def scrape():
             scraped = asyncio.run(
                 scrape_accounts(valid_usernames, count=count, since_date=since_date, progress=emit)
             )
-        except InteractiveLoginRequired as exc:
-            q.put({"type": "error", "message": str(exc)})
+        except (InteractiveLoginRequired, SessionExpired) as exc:
+            q.put({"type": "session_expired", "message": str(exc)})
             return
         except Exception as exc:
             q.put({"type": "error", "message": str(exc)})

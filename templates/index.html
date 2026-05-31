@@ -23,7 +23,14 @@
         <h1 class="text-xl font-bold tracking-tight text-white">X Stock Ticker Monitor</h1>
         <p class="text-gray-500 text-xs mt-0.5">Scan X accounts · extract US-listed tickers · sector breakdown · export JSON</p>
       </div>
-      <span class="text-xs text-gray-600 bg-gray-900 border border-gray-800 px-2 py-1 rounded">US stocks only</span>
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-gray-600 bg-gray-900 border border-gray-800 px-2 py-1 rounded">US stocks only</span>
+        <span id="xStatusBadge" class="text-xs px-2 py-1 rounded border hidden"></span>
+        <button id="connectXBtn" onclick="connectX()"
+          class="hidden text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 px-3 py-1 rounded transition-colors">
+          Connect X Account
+        </button>
+      </div>
     </div>
 
     <!-- Input form -->
@@ -57,25 +64,49 @@
       </div>
 
       <!-- Depth controls -->
-      <div class="flex flex-wrap items-center gap-4 mt-4 pt-4 border-t border-gray-800">
-        <div class="flex items-center gap-2">
-          <label class="text-gray-500 text-xs uppercase tracking-wider whitespace-nowrap">Max posts</label>
-          <select id="postCount"
-            class="bg-gray-800 text-gray-200 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500">
-            <option value="10">10 posts</option>
-            <option value="25">25 posts</option>
-            <option value="50">50 posts</option>
-            <option value="100">100 posts</option>
-            <option value="200">200 posts</option>
-          </select>
+      <div class="mt-4 pt-4 border-t border-gray-800 space-y-3">
+        <!-- Quick presets -->
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-gray-500 text-xs uppercase tracking-wider whitespace-nowrap">Scan window</span>
+          <button type="button" id="preset-today" onclick="applyPreset('today')"
+            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
+            Today
+          </button>
+          <button type="button" id="preset-7d" onclick="applyPreset('7d')"
+            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
+            Last 7 days
+          </button>
+          <button type="button" id="preset-30d" onclick="applyPreset('30d')"
+            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
+            Last 30 days
+          </button>
+          <button type="button" id="preset-custom" onclick="applyPreset('custom')"
+            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
+            Custom
+          </button>
         </div>
-        <div class="flex items-center gap-2">
-          <label class="text-gray-500 text-xs uppercase tracking-wider whitespace-nowrap">Since date</label>
-          <input type="date" id="sinceDate"
-            class="bg-gray-800 text-gray-200 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
-            title="Stop collecting posts older than this date (optional)" />
-          <span class="text-gray-600 text-xs">optional</span>
+        <!-- Manual controls (visible in custom mode only) -->
+        <div id="customControls" class="hidden flex flex-wrap items-center gap-4">
+          <div class="flex items-center gap-2">
+            <label class="text-gray-500 text-xs uppercase tracking-wider whitespace-nowrap">Max posts</label>
+            <select id="postCount"
+              class="bg-gray-800 text-gray-200 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500">
+              <option value="10">10 posts</option>
+              <option value="25">25 posts</option>
+              <option value="50">50 posts</option>
+              <option value="100">100 posts</option>
+              <option value="200" selected>200 posts</option>
+            </select>
+          </div>
+          <div class="flex items-center gap-2">
+            <label class="text-gray-500 text-xs uppercase tracking-wider whitespace-nowrap">Since date</label>
+            <input type="date" id="sinceDate"
+              class="bg-gray-800 text-gray-200 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+              title="Stop collecting posts older than this date" />
+          </div>
         </div>
+        <!-- Summary label shown for presets -->
+        <div id="presetLabel" class="text-xs text-blue-400"></div>
       </div>
 
       <div class="mt-4">
@@ -96,6 +127,12 @@
         <span id="progressStatus" class="text-gray-200 text-sm font-semibold">Connecting...</span>
       </div>
       <div id="progressLog" class="mt-1.5 space-y-0.5 text-xs max-h-40 overflow-y-auto"></div>
+    </div>
+
+    <!-- Session expired banner -->
+    <div id="sessionBanner" class="hidden bg-yellow-950 border border-yellow-700 rounded-xl p-4 mb-6 text-yellow-300 text-sm flex items-center justify-between gap-4">
+      <span id="sessionBannerMsg">X session expired. Please reconnect to continue scanning.</span>
+      <button onclick="connectX()" class="shrink-0 bg-yellow-700 hover:bg-yellow-600 text-white text-xs font-semibold px-4 py-1.5 rounded transition-colors" id="sessionBannerBtn">Connect X Account</button>
     </div>
 
     <!-- Error -->
@@ -187,15 +224,72 @@
   <script>
     let currentResult = null;
     let currentES = null;
+    // Preset state: {count, since_date} resolved at scan time
+    let _preset = { count: 10, since_date: '' };
+
+    // ── Preset selector ───────────────────────────────────────────────────────
+
+    function applyPreset(name) {
+      // Highlight active button
+      document.querySelectorAll('.preset-btn').forEach(b => {
+        b.classList.remove('border-blue-500', 'text-blue-300', 'bg-blue-950');
+      });
+      const btn = document.getElementById('preset-' + name);
+      if (btn) btn.classList.add('border-blue-500', 'text-blue-300', 'bg-blue-950');
+
+      const customControls = document.getElementById('customControls');
+      const label = document.getElementById('presetLabel');
+
+      const today = new Date();
+      const fmt = (d) => d.toISOString().slice(0, 10); // YYYY-MM-DD
+
+      if (name === 'today') {
+        _preset = { count: 200, since_date: fmt(today) };
+        customControls.classList.add('hidden');
+        label.textContent = `Up to 200 posts · since ${fmt(today)}`;
+      } else if (name === '7d') {
+        const d = new Date(today); d.setDate(d.getDate() - 7);
+        _preset = { count: 200, since_date: fmt(d) };
+        customControls.classList.add('hidden');
+        label.textContent = `Up to 200 posts · since ${fmt(d)}`;
+      } else if (name === '30d') {
+        const d = new Date(today); d.setDate(d.getDate() - 30);
+        _preset = { count: 200, since_date: fmt(d) };
+        customControls.classList.add('hidden');
+        label.textContent = `Up to 200 posts · since ${fmt(d)}`;
+      } else {
+        // custom — show the manual controls, clear preset state
+        _preset = { count: null, since_date: null }; // will read from inputs
+        customControls.classList.remove('hidden');
+        label.textContent = '';
+      }
+    }
+
+    // Default to "Today" on load
+    applyPreset('today');
 
     // ── Scan ──────────────────────────────────────────────────────────────────
 
     async function runScrape() {
       const usernames = document.getElementById('usernames').value.trim();
-      if (!usernames) return;
+      if (!usernames) {
+        const ta = document.getElementById('usernames');
+        ta.classList.add('border-red-500');
+        ta.focus();
+        setTimeout(() => ta.classList.remove('border-red-500'), 2000);
+        showError('Enter at least one X account username before scanning.');
+        return;
+      }
 
-      const count = parseInt(document.getElementById('postCount').value) || 10;
-      const since_date = document.getElementById('sinceDate').value || '';
+      // Resolve count + since_date from preset or custom inputs
+      let count, since_date;
+      if (_preset.count !== null) {
+        count = _preset.count;
+        since_date = _preset.since_date;
+      } else {
+        count = parseInt(document.getElementById('postCount').value) || 10;
+        since_date = document.getElementById('sinceDate').value || '';
+      }
 
       if (currentES) { currentES.close(); currentES = null; }
 
@@ -274,6 +368,14 @@
           resetScanBtn();
           break;
 
+        case 'session_expired':
+          if (currentES) { currentES.close(); currentES = null; }
+          document.getElementById('progressArea').classList.add('hidden');
+          showSessionBanner(msg.message);
+          updateXStatus(false);
+          resetScanBtn();
+          break;
+
         case 'error':
           if (currentES) { currentES.close(); currentES = null; }
           document.getElementById('progressArea').classList.add('hidden');
@@ -301,6 +403,61 @@
       const btn = document.getElementById('scrapeBtn');
       btn.disabled = false;
       btn.textContent = 'Scan Accounts';
+    }
+
+    // ── X session ─────────────────────────────────────────────────────────────
+
+    async function checkXSession() {
+      try {
+        const resp = await fetch('/session-status');
+        const data = await resp.json();
+        updateXStatus(data.connected);
+      } catch (e) { /* ignore */ }
+    }
+
+    function updateXStatus(connected) {
+      const badge = document.getElementById('xStatusBadge');
+      const btn = document.getElementById('connectXBtn');
+      badge.classList.remove('hidden');
+      if (connected) {
+        badge.textContent = '● X connected';
+        badge.className = 'text-xs px-2 py-1 rounded border border-green-800 bg-green-950 text-green-400';
+        btn.classList.add('hidden');
+        document.getElementById('sessionBanner').classList.add('hidden');
+      } else {
+        badge.textContent = '○ X disconnected';
+        badge.className = 'text-xs px-2 py-1 rounded border border-yellow-800 bg-yellow-950 text-yellow-400';
+        btn.classList.remove('hidden');
+      }
+    }
+
+    function showSessionBanner(msg) {
+      const banner = document.getElementById('sessionBanner');
+      document.getElementById('sessionBannerMsg').textContent = msg || 'X session expired. Please reconnect.';
+      banner.classList.remove('hidden');
+    }
+
+    async function connectX() {
+      const btn = document.getElementById('connectXBtn');
+      const bannerBtn = document.getElementById('sessionBannerBtn');
+      const origText = btn.textContent;
+      btn.disabled = true; btn.textContent = 'Opening browser...';
+      bannerBtn.disabled = true; bannerBtn.textContent = 'Opening browser...';
+      try {
+        const resp = await fetch('/connect-x', { method: 'POST' });
+        const data = await resp.json();
+        if (data.ok) {
+          updateXStatus(true);
+          document.getElementById('sessionBanner').classList.add('hidden');
+        } else {
+          showError('Connect failed: ' + data.message);
+        }
+      } catch (e) {
+        showError('Could not connect: ' + e.message);
+      } finally {
+        btn.disabled = false; btn.textContent = origText;
+        bannerBtn.disabled = false; bannerBtn.textContent = 'Connect X Account';
+      }
     }
 
     // ── Watchlists ────────────────────────────────────────────────────────────
@@ -582,20 +739,63 @@
               ${data.stopped_by === 'end_of_timeline' ? '<span class="text-xs text-gray-700 bg-gray-800 px-1.5 py-0.5 rounded">reached end</span>' : ''}
             </div>
           </div>
-          <table class="w-full">
-            <thead><tr class="text-gray-600 text-xs uppercase tracking-wider">
-              <th class="text-left px-4 py-2.5">Ticker / Price</th>
-              <th class="text-left px-4 py-2.5">Sector / Company</th>
-              <th class="text-left px-4 py-2.5">Mentions</th>
-              <th class="text-left px-4 py-2.5">Post Snippets</th>
-            </tr></thead>
-            <tbody>${tickerRows}</tbody>
-          </table>
+          <!-- Sub-tabs -->
+          <div class="flex border-b border-gray-800 text-xs">
+            <button onclick="switchAccountTab(this,'tickers')" class="acct-tab-tickers px-4 py-2 font-semibold border-b-2 border-blue-500 text-white">Tickers</button>
+            <button onclick="switchAccountTab(this,'posts')" class="acct-tab-posts px-4 py-2 text-gray-500 border-b-2 border-transparent hover:text-gray-300">Full Posts (${(data.posts||[]).length})</button>
+          </div>
+          <!-- Tickers pane -->
+          <div class="acct-pane-tickers">
+            <table class="w-full">
+              <thead><tr class="text-gray-600 text-xs uppercase tracking-wider">
+                <th class="text-left px-4 py-2.5">Ticker / Price</th>
+                <th class="text-left px-4 py-2.5">Sector / Company</th>
+                <th class="text-left px-4 py-2.5">Mentions</th>
+                <th class="text-left px-4 py-2.5">Post Snippets</th>
+              </tr></thead>
+              <tbody>${tickerRows}</tbody>
+            </table>
+          </div>
+          <!-- Posts pane -->
+          <div class="acct-pane-posts hidden p-4 space-y-3">
+            ${(data.posts || []).map((p, i) => {
+              const dateStr = p.posted_at ? fmtDate(p.posted_at) : '';
+              const eng = [
+                p.likes   != null ? `♥ ${p.likes}`   : '',
+                p.reposts != null ? `↺ ${p.reposts}` : '',
+                p.replies != null ? `💬 ${p.replies}` : '',
+                p.views   != null ? `👁 ${p.views}`   : '',
+              ].filter(Boolean).join('  ');
+              const link = p.url ? `<a href="${escHtml(p.url)}" target="_blank" rel="noopener" class="text-blue-500 hover:underline text-xs ml-2">↗ open</a>` : '';
+              const repostBadge = p.is_repost ? '<span class="text-xs text-gray-600 bg-gray-800 px-1.5 py-0.5 rounded mr-1">↺ repost</span>' : '';
+              return `<div class="bg-gray-800/50 border border-gray-700 rounded-lg p-3">
+                <div class="flex items-center gap-2 mb-1.5 text-xs text-gray-500">
+                  <span class="text-gray-600">#${i+1}</span>
+                  ${repostBadge}
+                  ${dateStr ? `<span>${dateStr}</span>` : ''}
+                  ${link}
+                  ${eng ? `<span class="ml-auto text-gray-600">${eng}</span>` : ''}
+                </div>
+                <p class="text-gray-200 text-sm whitespace-pre-wrap leading-relaxed">${escHtml(p.text || '')}</p>
+              </div>`;
+            }).join('')}
+          </div>
         </div>`;
       }
 
       document.getElementById('results').classList.remove('hidden');
       document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function switchAccountTab(btn, tab) {
+      const card = btn.closest('.bg-gray-900');
+      // Update tab button styles
+      card.querySelector('.acct-tab-tickers').className = 'acct-tab-tickers px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-300';
+      card.querySelector('.acct-tab-posts').className   = 'acct-tab-posts px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-300';
+      btn.className = btn.className.replace('border-transparent text-gray-500 hover:text-gray-300', 'border-blue-500 text-white font-semibold');
+      // Show/hide panes
+      card.querySelector('.acct-pane-tickers').classList.toggle('hidden', tab !== 'tickers');
+      card.querySelector('.acct-pane-posts').classList.toggle('hidden',   tab !== 'posts');
     }
 
     function downloadJSON() {
@@ -665,6 +865,7 @@
 
     // ── Init ──────────────────────────────────────────────────────────────────
     loadWatchlists();
+    checkXSession();
     {% if recent_runs %}
     loadResult('{{ recent_runs[0].filename }}');
     {% endif %}
