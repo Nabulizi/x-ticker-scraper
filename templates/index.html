@@ -874,12 +874,15 @@
         const cards = posts.map(p => postCard(p)).join('');
         sections.push(`
           <div class="space-y-3">
-            <div class="flex items-center gap-3">
+            <div class="flex items-center gap-3 cursor-pointer select-none" onclick="toggleFeedSection(this)">
               <span class="text-white font-bold text-base">@${escHtml(username)}</span>
               <span class="text-gray-600 text-xs">${posts.length} post${posts.length !== 1 ? 's' : ''}</span>
               <div class="flex-1 h-px bg-gray-800"></div>
+              <span class="feed-section-chevron text-gray-500 text-xs">▼</span>
             </div>
-            ${cards}
+            <div class="feed-section-body space-y-3">
+              ${cards}
+            </div>
           </div>`);
       }
       document.getElementById('postsCount').textContent = totalPosts ? `(${totalPosts})` : '';
@@ -919,6 +922,14 @@
         </div>
         <p class="text-gray-100 text-sm whitespace-pre-wrap leading-relaxed break-words">${highlightCashtags(p.text)}</p>
       </div>`;
+    }
+
+    function toggleFeedSection(header) {
+      const section = header.closest('.space-y-3');
+      const body = section.querySelector('.feed-section-body');
+      const chev = header.querySelector('.feed-section-chevron');
+      const collapsed = body.classList.toggle('hidden');
+      chev.textContent = collapsed ? '▶' : '▼';
     }
 
     function toggleAccountCard(header) {
