@@ -21,7 +21,7 @@
     <div class="flex items-center justify-between border-b border-gray-800 pb-4 mb-8">
       <div>
         <h1 class="text-xl font-bold tracking-tight text-white">X Stock Ticker Monitor</h1>
-        <p class="text-gray-500 text-xs mt-0.5">Scan X accounts · extract US-listed tickers · sector breakdown · export JSON</p>
+        <p class="text-gray-500 text-xs mt-0.5">Scan X accounts · read full posts · extract US-listed tickers · export JSON</p>
       </div>
       <div class="flex items-center gap-2">
         <span class="text-xs text-gray-600 bg-gray-900 border border-gray-800 px-2 py-1 rounded">US stocks only</span>
@@ -72,6 +72,10 @@
             class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
             Today
           </button>
+          <button type="button" id="preset-3d" onclick="applyPreset('3d')"
+            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
+            Last 3 days
+          </button>
           <button type="button" id="preset-7d" onclick="applyPreset('7d')"
             class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
             Last 7 days
@@ -109,10 +113,15 @@
         <div id="presetLabel" class="text-xs text-blue-400"></div>
       </div>
 
-      <div class="mt-4">
+      <div class="mt-4 flex items-center gap-2">
         <button id="scrapeBtn" onclick="runScrape()"
           class="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white px-6 py-2 rounded-lg font-semibold text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
           Scan Accounts
+        </button>
+        <button id="digestBtn" onclick="runDigest()"
+          title="Scan today's posts for your accounts (or all saved watchlists if empty) and build a one-glance signal summary"
+          class="bg-emerald-700 hover:bg-emerald-600 active:bg-emerald-800 text-white px-6 py-2 rounded-lg font-semibold text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+          📋 Daily Digest
         </button>
       </div>
     </div>
@@ -141,6 +150,9 @@
     <!-- Results -->
     <div id="results" class="hidden space-y-6">
 
+      <!-- Daily digest summary -->
+      <div id="digestPanel" class="hidden"></div>
+
       <!-- Meta + download -->
       <div class="flex items-center justify-between">
         <div id="metaBar" class="text-gray-400 text-xs"></div>
@@ -159,18 +171,21 @@
       <!-- Combined section with tabs -->
       <div>
         <div class="flex items-center gap-4 mb-3 border-b border-gray-800 pb-0">
-          <button id="tab-ranked" onclick="switchTab('ranked')"
+          <button id="tab-posts" onclick="switchTab('posts')"
             class="tab-active border-b-2 px-1 pb-2 text-sm font-semibold transition-colors">
-            Ranked Tickers
+            Posts <span id="postsCount" class="text-xs text-gray-500 font-normal"></span>
           </button>
-          <button id="tab-sector" onclick="switchTab('sector')"
+          <button id="tab-ranked" onclick="switchTab('ranked')"
             class="tab-inactive border-b-2 px-1 pb-2 text-sm font-semibold transition-colors">
-            By Sector
+            Ranked Tickers
           </button>
         </div>
 
+        <!-- Posts feed view (primary) -->
+        <div id="view-posts" class="space-y-3"></div>
+
         <!-- Ranked view -->
-        <div id="view-ranked">
+        <div id="view-ranked" class="hidden">
           <div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
             <table class="w-full">
               <thead>
@@ -179,8 +194,6 @@
                   <th class="text-left px-4 py-3">Ticker</th>
                   <th class="text-left px-4 py-3">Price</th>
                   <th class="text-left px-4 py-3">Change</th>
-                  <th class="text-left px-4 py-3">Company</th>
-                  <th class="text-left px-4 py-3">Sector</th>
                   <th class="text-left px-4 py-3">Mentions</th>
                   <th class="text-left px-4 py-3">Accounts</th>
                 </tr>
@@ -190,9 +203,6 @@
           </div>
           <p class="text-gray-700 text-xs mt-1.5 pl-1">Prices from Yahoo Finance · ~15 min delayed · cached 5 min</p>
         </div>
-
-        <!-- By Sector view -->
-        <div id="view-sector" class="hidden space-y-4"></div>
       </div>
 
       <!-- Per-account results -->
@@ -224,6 +234,7 @@
   <script>
     let currentResult = null;
     let currentES = null;
+    let _digestMode = false;   // when true, the next finished scan scrolls to the digest
     // Preset state: {count, since_date} resolved at scan time
     let _preset = { count: 10, since_date: '' };
 
@@ -243,15 +254,22 @@
       const today = new Date();
       const fmt = (d) => d.toISOString().slice(0, 10); // YYYY-MM-DD
 
+      // Per-account post cap scales with the window — a Today scan rarely needs
+      // more than a couple dozen posts, while a 30-day pull may go deeper.
       if (name === 'today') {
-        _preset = { count: 200, since_date: fmt(today) };
+        _preset = { count: 40, since_date: fmt(today) };
         customControls.classList.add('hidden');
-        label.textContent = `Up to 200 posts · since ${fmt(today)}`;
+        label.textContent = `Up to 40 posts · since ${fmt(today)}`;
+      } else if (name === '3d') {
+        const d = new Date(today); d.setDate(d.getDate() - 3);
+        _preset = { count: 70, since_date: fmt(d) };
+        customControls.classList.add('hidden');
+        label.textContent = `Up to 70 posts · since ${fmt(d)}`;
       } else if (name === '7d') {
         const d = new Date(today); d.setDate(d.getDate() - 7);
-        _preset = { count: 200, since_date: fmt(d) };
+        _preset = { count: 100, since_date: fmt(d) };
         customControls.classList.add('hidden');
-        label.textContent = `Up to 200 posts · since ${fmt(d)}`;
+        label.textContent = `Up to 100 posts · since ${fmt(d)}`;
       } else if (name === '30d') {
         const d = new Date(today); d.setDate(d.getDate() - 30);
         _preset = { count: 200, since_date: fmt(d) };
@@ -296,6 +314,7 @@
       const btn = document.getElementById('scrapeBtn');
       btn.disabled = true;
       btn.textContent = 'Scanning...';
+      document.getElementById('digestBtn').disabled = true;
 
       document.getElementById('progressArea').classList.remove('hidden');
       document.getElementById('progressLog').innerHTML = '';
@@ -332,6 +351,31 @@
       };
     }
 
+    // One-click daily digest: scan TODAY's posts for the accounts in the box
+    // (or the union of all saved watchlists if it's empty), then jump to the
+    // digest summary once the scan finishes.
+    async function runDigest() {
+      let accounts = document.getElementById('usernames').value.trim();
+      if (!accounts) {
+        try {
+          const wl = await (await fetch('/watchlists')).json();
+          const all = [...new Set(Object.values(wl).flat())];
+          if (all.length) {
+            document.getElementById('usernames').value = all.join('\n');
+          } else {
+            showError('Add at least one account, or save a watchlist, before running a digest.');
+            return;
+          }
+        } catch (e) {
+          showError('Could not load watchlists: ' + e.message);
+          return;
+        }
+      }
+      applyPreset('today');     // forces today's window (up to 40 posts/account)
+      _digestMode = true;
+      runScrape();
+    }
+
     function handleProgressEvent(msg) {
       switch (msg.type) {
         case 'ping':
@@ -366,6 +410,13 @@
           currentResult = msg;
           renderResults(msg.result);
           resetScanBtn();
+          if (_digestMode) {
+            _digestMode = false;
+            const dp = document.getElementById('digestPanel');
+            if (dp && !dp.classList.contains('hidden')) {
+              dp.scrollIntoView({ behavior: 'smooth' });
+            }
+          }
           break;
 
         case 'session_expired':
@@ -403,6 +454,7 @@
       const btn = document.getElementById('scrapeBtn');
       btn.disabled = false;
       btn.textContent = 'Scan Accounts';
+      document.getElementById('digestBtn').disabled = false;
     }
 
     // ── X session ─────────────────────────────────────────────────────────────
@@ -548,14 +600,11 @@
     // ── Results rendering ─────────────────────────────────────────────────────
 
     function switchTab(tab) {
-      document.getElementById('view-ranked').classList.toggle('hidden', tab !== 'ranked');
-      document.getElementById('view-sector').classList.toggle('hidden', tab !== 'sector');
-      document.getElementById('tab-ranked').className = tab === 'ranked'
-        ? 'tab-active border-b-2 px-1 pb-2 text-sm font-semibold transition-colors'
-        : 'tab-inactive border-b-2 px-1 pb-2 text-sm font-semibold transition-colors';
-      document.getElementById('tab-sector').className = tab === 'sector'
-        ? 'tab-active border-b-2 px-1 pb-2 text-sm font-semibold transition-colors'
-        : 'tab-inactive border-b-2 px-1 pb-2 text-sm font-semibold transition-colors';
+      ['posts', 'ranked'].forEach(t => {
+        document.getElementById('view-' + t).classList.toggle('hidden', t !== tab);
+        document.getElementById('tab-' + t).className = (t === tab ? 'tab-active' : 'tab-inactive')
+          + ' border-b-2 px-1 pb-2 text-sm font-semibold transition-colors';
+      });
     }
 
     function showError(msg) {
@@ -596,28 +645,100 @@
       return `<span class="ml-1 text-xs text-yellow-600 bg-yellow-900/30 px-1 py-0.5 rounded">${label}</span>`;
     }
 
-    const SECTOR_COLORS = {
-      'Technology': 'bg-blue-900 text-blue-300',
-      'Information Technology': 'bg-blue-900 text-blue-300',
-      'Communication Services': 'bg-purple-900 text-purple-300',
-      'Consumer Discretionary': 'bg-orange-900 text-orange-300',
-      'Consumer Staples': 'bg-yellow-900 text-yellow-300',
-      'Health Care': 'bg-green-900 text-green-300',
-      'Healthcare': 'bg-green-900 text-green-300',
-      'Financials': 'bg-emerald-900 text-emerald-300',
-      'Industrials': 'bg-gray-700 text-gray-300',
-      'Energy': 'bg-red-900 text-red-300',
-      'Materials': 'bg-lime-900 text-lime-300',
-      'Real Estate': 'bg-teal-900 text-teal-300',
-      'Utilities': 'bg-cyan-900 text-cyan-300',
-    };
+    function newBadge(isNew) {
+      return isNew
+        ? '<span class="ml-1.5 align-middle text-[10px] bg-emerald-900 text-emerald-300 px-1 py-0.5 rounded uppercase tracking-wide" title="First time this ticker appears in your history">new</span>'
+        : '';
+    }
 
-    function sectorBadge(sector) {
-      const cls = SECTOR_COLORS[sector] || 'bg-gray-800 text-gray-400';
-      return `<span class="text-xs px-1.5 py-0.5 rounded ${cls}">${escHtml(sector)}</span>`;
+    function lowConfBadge(low) {
+      return low
+        ? '<span class="ml-1.5 align-middle text-[10px] text-gray-500 border border-gray-700 px-1 py-0.5 rounded" title="One account, no $cashtag, weak signal — de-ranked">low-conf</span>'
+        : '';
+    }
+
+    function sentimentCell(t) {
+      const label = t.sentiment_label || 'mixed/neutral';
+      const v = t.net_sentiment;
+      const num = v != null ? `<span class="text-gray-600 text-xs ml-1">${v > 0 ? '+' : ''}${v}</span>` : '';
+      if (label === 'bullish') return `<span class="text-green-400 font-semibold">▲ bull</span>${num}`;
+      if (label === 'bearish') return `<span class="text-red-400 font-semibold">▼ bear</span>${num}`;
+      return '<span class="text-gray-500">• neutral</span>';
+    }
+
+    function signalCell(score, max) {
+      if (score == null) return '<span class="text-gray-600">—</span>';
+      const pct = max > 0 ? Math.max(4, Math.round((score / max) * 100)) : 0;
+      return `<div class="flex items-center gap-1.5" title="Signal score ${Number(score).toFixed(2)} (cashtag + thesis + cross-account weight)">
+        <div class="w-10 h-1.5 bg-gray-800 rounded overflow-hidden"><div class="h-full bg-blue-500" style="width:${pct}%"></div></div>
+        <span class="text-gray-300 text-xs">${Number(score).toFixed(1)}</span>
+      </div>`;
+    }
+
+    // ── Daily digest ──────────────────────────────────────────────────────────
+
+    function sentimentDot(label) {
+      if (label === 'bullish') return '<span class="text-green-400">▲</span>';
+      if (label === 'bearish') return '<span class="text-red-400">▼</span>';
+      return '<span class="text-gray-600">•</span>';
+    }
+
+    function digestChip(t, extra) {
+      let chg = '';
+      if (t.change_pct != null) {
+        chg = t.change_pct >= 0
+          ? `<span class="text-green-400 text-xs">+${Number(t.change_pct).toFixed(2)}%</span>`
+          : `<span class="text-red-400 text-xs">${Number(t.change_pct).toFixed(2)}%</span>`;
+      }
+      return `<div class="flex items-center gap-2 px-2.5 py-1.5 bg-gray-800/60 border border-gray-700 rounded-lg">
+        ${sentimentDot(t.sentiment_label)}
+        <span class="font-bold text-green-400">$${escHtml(t.ticker)}</span>
+        ${chg}
+        ${extra || ''}
+        <span class="ml-auto text-gray-500 text-xs">${t.total_mentions || 0}×</span>
+      </div>`;
+    }
+
+    function renderDigest(digest) {
+      const panel = document.getElementById('digestPanel');
+      if (!digest) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
+
+      const section = (title, items, color, renderItem) => {
+        if (!items || !items.length) return '';
+        return `<div class="mb-3 last:mb-0">
+          <div class="text-xs uppercase tracking-wider ${color} mb-1.5">${title} <span class="text-gray-600">${items.length}</span></div>
+          <div class="flex flex-wrap gap-1.5">${items.map(renderItem).join('')}</div>
+        </div>`;
+      };
+
+      const body = [
+        section('🆕 New today', digest.new_today, 'text-emerald-400', t => digestChip(t)),
+        section('🚀 Accelerating', digest.accelerating, 'text-orange-400',
+          t => digestChip(t, `<span class="text-orange-300 text-xs">${t.today_mentions}↑ vs ${t.prior_avg}/d</span>`)),
+        section('🎯 Top conviction', digest.top_conviction, 'text-blue-400',
+          t => digestChip(t, `<span class="text-gray-500 text-xs">${t.accounts} acct${t.accounts === 1 ? '' : 's'}</span>`)),
+        section('▲ Bullish', digest.bullish, 'text-green-400', t => digestChip(t)),
+        section('▼ Bearish', digest.bearish, 'text-red-400', t => digestChip(t)),
+      ].join('');
+
+      const empty = body ? '' :
+        '<div class="text-gray-600 text-xs">No notable signals in this window — try a wider scan window or more accounts.</div>';
+
+      panel.innerHTML = `<div class="bg-gray-900 border border-emerald-900/50 rounded-xl p-5">
+        <div class="flex items-center justify-between mb-3 pb-2 border-b border-gray-800">
+          <div class="flex items-center gap-2">
+            <span class="text-base font-bold text-white">📋 Daily Digest</span>
+            <span class="text-xs text-gray-500">${escHtml(digest.date || '')}</span>
+          </div>
+          <span class="text-xs text-gray-500">${(digest.accounts || []).length} account(s) · ${digest.total_tickers || 0} tickers</span>
+        </div>
+        ${body}${empty}
+      </div>`;
+      panel.classList.remove('hidden');
     }
 
     function renderResults(result) {
+      renderDigest(result.digest);
       const combined = result.combined_tickers || [];
       const accounts = result.accounts_analyzed || [];
 
@@ -631,60 +752,29 @@
       metaParts.push(new Date(result.run_at).toLocaleString());
       document.getElementById('metaBar').textContent = metaParts.join(' · ');
 
+      renderPostsFeed(result);
+
       const tbody = document.getElementById('combinedTable');
       if (combined.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="px-4 py-8 text-center text-gray-600">No US stock tickers found</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="6" class="px-4 py-8 text-center text-gray-600">No US stock tickers found</td></tr>`;
       } else {
         tbody.innerHTML = combined.map((t, i) => {
           const accs = Object.keys(t.sources || {}).map(a => `@${a}`).join(', ');
-          return `<tr class="border-b border-gray-800 hover:bg-gray-800/40 transition-colors">
+          const dim = t.low_confidence ? 'opacity-50' : '';
+          const susp = t.price_suspicious
+            ? '<span title="Suspicious price move — verify before trusting" class="text-yellow-500 ml-1">⚠</span>' : '';
+          const cash = t.cashtag_mentions
+            ? `<span class="text-gray-600 text-xs ml-1" title="${t.cashtag_mentions} as $cashtag">${t.cashtag_mentions}$</span>` : '';
+          return `<tr class="border-b border-gray-800 hover:bg-gray-800/40 transition-colors ${dim}">
             <td class="px-4 py-3 text-gray-600">${i + 1}</td>
-            <td class="px-4 py-3 font-bold text-green-400 text-base">$${escHtml(t.ticker)}${marketBadge(t.market_state)}</td>
-            <td class="px-4 py-3 text-sm">${fmtPrice(t.price, t.currency)}</td>
+            <td class="px-4 py-3 font-bold text-green-400 text-base" title="${escAttr(t.company || '')}">
+              $${escHtml(t.ticker)}${marketBadge(t.market_state)}${newBadge(t.is_new_today)}${lowConfBadge(t.low_confidence)}
+            </td>
+            <td class="px-4 py-3 text-sm">${fmtPrice(t.price, t.currency)}${susp}</td>
             <td class="px-4 py-3 text-sm">${fmtChange(t.change_pct, t.change_abs)}</td>
-            <td class="px-4 py-3 text-gray-300 text-xs">${escHtml(t.company || '')}</td>
-            <td class="px-4 py-3">${sectorBadge(t.sector || 'Unknown')}</td>
-            <td class="px-4 py-3 text-white font-semibold">${t.total_mentions}</td>
+            <td class="px-4 py-3 text-white font-semibold">${t.total_mentions}${cash}</td>
             <td class="px-4 py-3 text-gray-500 text-xs">${escHtml(accs)}</td>
           </tr>`;
-        }).join('');
-      }
-
-      const sectorDiv = document.getElementById('view-sector');
-      sectorDiv.innerHTML = '';
-      const bySector = result.by_sector || {};
-      const sectorNames = Object.keys(bySector).sort();
-      if (sectorNames.length === 0) {
-        sectorDiv.innerHTML = `<div class="text-gray-600 text-xs py-6 text-center">No sector data available</div>`;
-      } else {
-        sectorDiv.innerHTML = sectorNames.map(sector => {
-          const items = bySector[sector];
-          const rows = items.map(t => `
-            <tr class="border-b border-gray-800 hover:bg-gray-800/30">
-              <td class="px-4 py-2.5 font-bold text-green-400">$${escHtml(t.ticker)}${marketBadge(t.market_state)}</td>
-              <td class="px-4 py-2.5 text-gray-300 text-xs">${escHtml(t.company || '')}</td>
-              <td class="px-4 py-2.5 text-gray-400 text-xs">${escHtml(t.industry || '')}</td>
-              <td class="px-4 py-2.5">${fmtPrice(t.price, 'USD')}</td>
-              <td class="px-4 py-2.5">${fmtChange(t.change_pct, null)}</td>
-              <td class="px-4 py-2.5 text-white">${t.total_mentions}</td>
-            </tr>`).join('');
-          return `<div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-            <div class="px-4 py-2.5 border-b border-gray-800 flex items-center gap-2">
-              ${sectorBadge(sector)}
-              <span class="text-gray-500 text-xs">${items.length} ticker(s)</span>
-            </div>
-            <table class="w-full">
-              <thead><tr class="text-gray-600 text-xs uppercase tracking-wider">
-                <th class="text-left px-4 py-2">Ticker</th>
-                <th class="text-left px-4 py-2">Company</th>
-                <th class="text-left px-4 py-2">Industry</th>
-                <th class="text-left px-4 py-2">Price</th>
-                <th class="text-left px-4 py-2">Change</th>
-                <th class="text-left px-4 py-2">Mentions</th>
-              </tr></thead>
-              <tbody>${rows}</tbody>
-            </table>
-          </div>`;
         }).join('');
       }
 
@@ -701,7 +791,7 @@
 
         let tickerRows = '';
         if (!data.tickers || data.tickers.length === 0) {
-          tickerRows = `<tr><td colspan="4" class="px-4 py-6 text-center text-gray-600 text-xs">No tickers found</td></tr>`;
+          tickerRows = `<tr><td colspan="3" class="px-4 py-6 text-center text-gray-600 text-xs">No tickers found</td></tr>`;
         } else {
           tickerRows = data.tickers.map(t => {
             const snippets = t.occurrences.map(o => {
@@ -716,11 +806,6 @@
                 <div class="font-bold text-green-400 text-base">$${escHtml(t.ticker)}${marketBadge(t.market_state)}</div>
                 <div class="mt-1">${fmtPrice(t.price, t.currency)}</div>
                 <div class="mt-0.5">${fmtChange(t.change_pct, t.change_abs)}</div>
-              </td>
-              <td class="px-4 py-3 align-top">
-                <div class="text-gray-300 text-xs mb-1">${escHtml(t.company || '')}</div>
-                ${sectorBadge(t.sector || 'Unknown')}
-                <div class="text-gray-500 text-xs mt-1">${escHtml(t.industry || '')}</div>
               </td>
               <td class="px-4 py-3 align-top text-white font-semibold">${t.mentions}</td>
               <td class="px-4 py-3 align-top">${snippets}</td>
@@ -749,7 +834,6 @@
             <table class="w-full">
               <thead><tr class="text-gray-600 text-xs uppercase tracking-wider">
                 <th class="text-left px-4 py-2.5">Ticker / Price</th>
-                <th class="text-left px-4 py-2.5">Sector / Company</th>
                 <th class="text-left px-4 py-2.5">Mentions</th>
                 <th class="text-left px-4 py-2.5">Post Snippets</th>
               </tr></thead>
@@ -758,33 +842,79 @@
           </div>
           <!-- Posts pane -->
           <div class="acct-pane-posts hidden p-4 space-y-3">
-            ${(data.posts || []).map((p, i) => {
-              const dateStr = p.posted_at ? fmtDate(p.posted_at) : '';
-              const eng = [
-                p.likes   != null ? `♥ ${p.likes}`   : '',
-                p.reposts != null ? `↺ ${p.reposts}` : '',
-                p.replies != null ? `💬 ${p.replies}` : '',
-                p.views   != null ? `👁 ${p.views}`   : '',
-              ].filter(Boolean).join('  ');
-              const link = p.url ? `<a href="${escHtml(p.url)}" target="_blank" rel="noopener" class="text-blue-500 hover:underline text-xs ml-2">↗ open</a>` : '';
-              const repostBadge = p.is_repost ? '<span class="text-xs text-gray-600 bg-gray-800 px-1.5 py-0.5 rounded mr-1">↺ repost</span>' : '';
-              return `<div class="bg-gray-800/50 border border-gray-700 rounded-lg p-3">
-                <div class="flex items-center gap-2 mb-1.5 text-xs text-gray-500">
-                  <span class="text-gray-600">#${i+1}</span>
-                  ${repostBadge}
-                  ${dateStr ? `<span>${dateStr}</span>` : ''}
-                  ${link}
-                  ${eng ? `<span class="ml-auto text-gray-600">${eng}</span>` : ''}
-                </div>
-                <p class="text-gray-200 text-sm whitespace-pre-wrap leading-relaxed">${escHtml(p.text || '')}</p>
-              </div>`;
-            }).join('')}
+            ${(data.posts || []).map(p => postCard(p)).join('')}
           </div>
         </div>`;
       }
 
+      switchTab('posts');
       document.getElementById('results').classList.remove('hidden');
       document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
+    }
+
+    // Flattened chronological feed of every account's full posts for the day.
+    function renderPostsFeed(result) {
+      const feed = document.getElementById('view-posts');
+      // Respect scan order (accounts_analyzed keeps insertion order).
+      const accountOrder = result.accounts_analyzed || Object.keys(result.results || {});
+      const res = result.results || {};
+      let totalPosts = 0;
+      const sections = [];
+      for (const username of accountOrder) {
+        const data = res[username];
+        if (!data || data.error) continue;
+        const posts = data.posts || [];
+        if (!posts.length) continue;
+        totalPosts += posts.length;
+        // posts are already newest-first from the scraper
+        const cards = posts.map(p => postCard(p)).join('');
+        sections.push(`
+          <div class="space-y-3">
+            <div class="flex items-center gap-3">
+              <span class="text-white font-bold text-base">@${escHtml(username)}</span>
+              <span class="text-gray-600 text-xs">${posts.length} post${posts.length !== 1 ? 's' : ''}</span>
+              <div class="flex-1 h-px bg-gray-800"></div>
+            </div>
+            ${cards}
+          </div>`);
+      }
+      document.getElementById('postsCount').textContent = totalPosts ? `(${totalPosts})` : '';
+      if (!sections.length) {
+        feed.innerHTML = `<div class="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center text-gray-600 text-sm">No posts in this scan window.</div>`;
+        return;
+      }
+      feed.innerHTML = sections.join('');
+    }
+
+    // Bold $CASHTAGS so tickers stay visible inside the full-context post text.
+    function highlightCashtags(text) {
+      return escHtml(text || '').replace(/(\$[A-Za-z]{1,6})\b/g,
+        '<span class="text-green-400 font-semibold">$1</span>');
+    }
+
+    // Shared post card — used by the top-level Posts feed and per-account panes.
+    // Pass `account` to show the @handle (feed); omit it inside an account card.
+    function postCard(p, account) {
+      const dateStr = p.posted_at ? fmtDate(p.posted_at) : '';
+      const eng = [
+        p.likes   != null ? `♥ ${p.likes}`   : '',
+        p.reposts != null ? `↺ ${p.reposts}` : '',
+        p.replies != null ? `💬 ${p.replies}` : '',
+        p.views   != null ? `👁 ${p.views}`   : '',
+      ].filter(Boolean).join('  ');
+      const link = p.url ? `<a href="${escHtml(p.url)}" target="_blank" rel="noopener" class="text-blue-500 hover:underline">↗ open</a>` : '';
+      const repostBadge = p.is_repost ? '<span class="text-xs text-gray-600 bg-gray-800 px-1.5 py-0.5 rounded">↺ repost</span>' : '';
+      const acct = account ? `<span class="font-bold text-white">@${escHtml(account)}</span>` : '';
+      return `<div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+        <div class="flex items-center gap-2 mb-2 text-xs text-gray-500 flex-wrap">
+          ${acct}
+          ${repostBadge}
+          ${dateStr ? `<span>${dateStr}</span>` : ''}
+          ${link}
+          ${eng ? `<span class="ml-auto text-gray-600 shrink-0">${eng}</span>` : ''}
+        </div>
+        <p class="text-gray-100 text-sm whitespace-pre-wrap leading-relaxed break-words">${highlightCashtags(p.text)}</p>
+      </div>`;
     }
 
     function switchAccountTab(btn, tab) {
@@ -813,17 +943,23 @@
       if (!currentResult) return;
       const combined = currentResult.result.combined_tickers || [];
       const rows = [
-        ['Rank', 'Ticker', 'Company', 'Sector', 'Industry', 'Price (USD)', 'Change %', 'Change Abs', 'Total Mentions', 'Accounts'],
+        ['Rank', 'Ticker', 'Price (USD)', 'Change %', 'Change Abs',
+         'Signal Score', 'Sentiment', 'Net Sentiment', 'Total Mentions', 'Cashtag Mentions',
+         '# Accounts', 'New Today', 'Low Confidence', 'Accounts'],
         ...combined.map((t, i) => [
           i + 1,
           t.ticker,
-          t.company || '',
-          t.sector || '',
-          t.industry || '',
           t.price ?? '',
           t.change_pct ?? '',
           t.change_abs ?? '',
+          t.signal_score ?? '',
+          t.sentiment_label || '',
+          t.net_sentiment ?? '',
           t.total_mentions,
+          t.cashtag_mentions ?? '',
+          t.accounts ?? Object.keys(t.sources || {}).length,
+          t.is_new_today ? 'yes' : '',
+          t.low_confidence ? 'yes' : '',
           Object.keys(t.sources || {}).join('; '),
         ])
       ];

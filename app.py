@@ -14,7 +14,6 @@ from flask import Flask, Response, jsonify, render_template, request, send_from_
 
 from price_lookup import lookup_prices
 from scraper import InteractiveLoginRequired, SessionExpired, scrape_accounts, session_status, validate_username
-from sector_lookup import lookup_sectors
 from ticker_extractor import extract_tickers
 from tickers_db import load_tickers
 
@@ -71,6 +70,77 @@ def _load_watchlists() -> dict:
 def _save_watchlists(data: dict) -> None:
     WATCHLISTS_FILE.parent.mkdir(exist_ok=True)
     _write_json_atomic(WATCHLISTS_FILE, data)
+
+
+def build_digest(run: dict) -> dict:
+    """
+    Distill a finished run into a daily 'signal' summary. Cheap to compute and
+    attached to every scan, so the dashboard can show a glanceable digest:
+      - top_conviction: highest cross-account / signal-score names (spam excluded)
+      - new_today:      tickers appearing for the FIRST time ever today (DB-backed)
+      - accelerating:   today's mentions well above the prior few-day average
+      - bullish/bearish: directional splits by aggregate sentiment
+    DB-dependent sections degrade gracefully to empty if store is unavailable.
+    """
+    combined = run.get("combined_tickers", [])
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def slim(t: dict) -> dict:
+        return {
+            "ticker": t.get("ticker"),
+            "company": t.get("company"),
+            "sector": t.get("sector"),
+            "price": t.get("price"),
+            "change_pct": t.get("change_pct"),
+            "total_mentions": t.get("total_mentions"),
+            "accounts": t.get("accounts"),
+            "signal_score": t.get("signal_score"),
+            "net_sentiment": t.get("net_sentiment"),
+            "sentiment_label": t.get("sentiment_label"),
+            "sources": list((t.get("sources") or {}).keys()),
+        }
+
+    digest = {
+        "date": today,
+        "accounts": run.get("accounts_analyzed", []),
+        "total_tickers": len(combined),
+        "top_conviction": [slim(t) for t in combined if not t.get("low_confidence")][:8],
+        "bullish": [slim(t) for t in combined if t.get("sentiment_label") == "bullish"][:8],
+        "bearish": [slim(t) for t in combined if t.get("sentiment_label") == "bearish"][:8],
+        "new_today": [],
+        "accelerating": [],
+    }
+
+    if store is not None and combined:
+        syms = [t["ticker"] for t in combined]
+        try:
+            first_seen = store.ticker_first_seen(syms)
+            daily = store.ticker_daily_counts(syms, days=5)
+        except Exception:
+            first_seen, daily = {}, {}
+
+        for t in combined:
+            sym = t["ticker"]
+            # Stamp the full entry so the ranked table can badge first-ever mentions.
+            t["is_new_today"] = first_seen.get(sym) == today
+            if t["is_new_today"]:
+                digest["new_today"].append(slim(t))
+
+            counts = daily.get(sym, {})
+            today_n = counts.get(today, 0)
+            prior = [v for d, v in counts.items() if d != today]
+            prior_avg = sum(prior) / len(prior) if prior else 0.0
+            # Accelerating: at least 2 mentions today AND clearly above the
+            # prior-day baseline (or no prior mentions at all = brand-new spike).
+            if today_n >= 2 and today_n > max(1.0, prior_avg * 1.5):
+                item = slim(t)
+                item["today_mentions"] = today_n
+                item["prior_avg"] = round(prior_avg, 1)
+                digest["accelerating"].append(item)
+
+        digest["accelerating"].sort(key=lambda x: -x["today_mentions"])
+
+    return digest
 
 
 @app.route("/")
@@ -216,22 +286,20 @@ def scrape():
 
         if all_ticker_symbols:
             emit({"type": "progress",
-                  "message": f"Looking up sector data for {len(all_ticker_symbols)} ticker(s)..."})
-            sector_map = lookup_sectors(all_ticker_symbols)
-            emit({"type": "progress",
                   "message": f"Fetching prices for {len(all_ticker_symbols)} ticker(s)..."})
             price_map = lookup_prices(all_ticker_symbols)
         else:
-            sector_map = {}
             price_map = {}
 
         def _enrich(t: dict) -> None:
             sym = t["ticker"]
-            s = sector_map.get(sym, {})
             p = price_map.get(sym, {})
-            t["sector"]       = s.get("sector",   "Unknown")
-            t["industry"]     = s.get("industry", "Unknown")
-            t["company"]      = s.get("company",  sym)
+            # Sector/industry/company came from yfinance `.info`, a slow + unreliable
+            # call that was dropped (low value for daily monitoring). Keep the keys
+            # with light defaults so downstream consumers don't KeyError.
+            t["sector"]       = "Unknown"
+            t["industry"]     = "Unknown"
+            t["company"]      = sym
             t["price"]        = p.get("price")
             t["change_pct"]   = p.get("change_pct")
             t["change_abs"]   = p.get("change_abs")
@@ -270,26 +338,20 @@ def scrape():
             _enrich(entry)
 
         run["combined_tickers"] = combined_list
-
-        by_sector: dict = {}
-        for entry in combined_list:
-            sector = entry.get("sector", "Unknown")
-            by_sector.setdefault(sector, []).append({
-                "ticker":         entry["ticker"],
-                "company":        entry["company"],
-                "industry":       entry["industry"],
-                "total_mentions": entry["total_mentions"],
-                "price":          entry.get("price"),
-                "change_pct":     entry.get("change_pct"),
-                "market_state":   entry.get("market_state"),
-            })
-        run["by_sector"] = dict(sorted(by_sector.items()))
+        run["by_sector"] = {}  # sector grouping removed (no more .info lookups)
 
         if store is not None:
             try:
                 store.record_run(run)
             except Exception as exc:  # persistence must never break a scan
                 print(f"[!] store.record_run failed (non-fatal): {exc}")
+
+        # Digest runs AFTER record_run so today's mentions are already in the DB.
+        try:
+            run["digest"] = build_digest(run)
+        except Exception as exc:  # digest must never break a scan
+            print(f"[!] build_digest failed (non-fatal): {exc}")
+            run["digest"] = None
 
         slug = "_".join(valid_usernames[:3])
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -409,15 +471,11 @@ def velocity(ticker):
     })
 
 
-@app.route("/scorecard")
-def scorecard():
-    if store is None:
-        return jsonify({"error": "persistence not available"}), 503
+def _min_calls_arg(default=2):
     try:
-        min_calls = max(1, min(int(request.args.get("min_calls", 3)), 100))
+        return max(1, min(int(request.args.get("min_calls", default)), 100))
     except (TypeError, ValueError):
-        min_calls = 3
-    return jsonify(store.account_scorecard(min_calls))
+        return default
 
 
 def _write_json_atomic(path: Path, data) -> None:
@@ -436,7 +494,8 @@ def _write_json_atomic(path: Path, data) -> None:
 
 
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", "5000"))
     print("[→] Loading US ticker database...")
     get_tickers_db()
-    print("[✓] Ready — open http://localhost:5000")
-    app.run(debug=False, port=5000)
+    print(f"[✓] Ready — open http://localhost:{port}")
+    app.run(debug=False, port=port)
