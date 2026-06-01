@@ -814,7 +814,7 @@
         }
 
         accountDiv.innerHTML += `<div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-800 cursor-pointer select-none" onclick="toggleAccountCard(this)">
             <span class="font-bold text-white">@${escHtml(username)}</span>
             <div class="flex items-center gap-2">
               <span class="text-gray-600 text-xs">${data.posts_analyzed} posts</span>
@@ -822,8 +822,11 @@
               ${data.stopped_by === 'date' && data.last_post_date ? `<span class="text-xs text-gray-600">last post ${fmtDate(data.last_post_date)}</span>` : ''}
               ${data.stopped_by === 'count' ? '<span class="text-xs text-blue-700 bg-blue-900/30 px-1.5 py-0.5 rounded">stopped: post limit</span>' : ''}
               ${data.stopped_by === 'end_of_timeline' ? '<span class="text-xs text-gray-700 bg-gray-800 px-1.5 py-0.5 rounded">reached end</span>' : ''}
+              <span class="acct-chevron text-gray-500 text-xs ml-1">▼</span>
             </div>
           </div>
+          <!-- Collapsible body -->
+          <div class="acct-card-body">
           <!-- Sub-tabs -->
           <div class="flex border-b border-gray-800 text-xs">
             <button onclick="switchAccountTab(this,'tickers')" class="acct-tab-tickers px-4 py-2 font-semibold border-b-2 border-blue-500 text-white">Tickers</button>
@@ -844,6 +847,7 @@
           <div class="acct-pane-posts hidden p-4 space-y-3">
             ${(data.posts || []).map(p => postCard(p)).join('')}
           </div>
+          </div><!-- /acct-card-body -->
         </div>`;
       }
 
@@ -917,7 +921,16 @@
       </div>`;
     }
 
+    function toggleAccountCard(header) {
+      const card = header.closest('.bg-gray-900');
+      const body = card.querySelector('.acct-card-body');
+      const chev = header.querySelector('.acct-chevron');
+      const collapsed = body.classList.toggle('hidden');
+      chev.textContent = collapsed ? '\u25b6' : '\u25bc';
+    }
+
     function switchAccountTab(btn, tab) {
+      event.stopPropagation();
       const card = btn.closest('.bg-gray-900');
       // Update tab button styles
       card.querySelector('.acct-tab-tickers').className = 'acct-tab-tickers px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-300';
