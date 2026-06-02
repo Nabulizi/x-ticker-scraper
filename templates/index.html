@@ -846,6 +846,8 @@
           </div>`;
           continue;
         }
+        // Skip accounts with no tickers — nothing useful to show in the breakdown.
+        if (!data.tickers || !data.tickers.length) continue;
 
         let tickerRows = '';
         if (!data.tickers || data.tickers.length === 0) {
