@@ -128,6 +128,47 @@ def record_run(run: dict) -> None:
                     )
 
 
+def ticker_first_seen(tickers: list) -> dict:
+    """
+    {ticker: 'YYYY-MM-DD'} earliest mention date across ALL history.
+    Used by the digest to flag names appearing for the very first time today.
+    """
+    syms = [t.upper() for t in tickers if t]
+    if not syms:
+        return {}
+    placeholders = ",".join("?" * len(syms))
+    with _lock, _conn() as c:
+        rows = c.execute(
+            f"SELECT ticker, substr(MIN(posted_at),1,10) FROM mentions "
+            f"WHERE ticker IN ({placeholders}) AND posted_at IS NOT NULL "
+            f"GROUP BY ticker",
+            syms,
+        ).fetchall()
+    return {r[0]: r[1] for r in rows if r[1]}
+
+
+def ticker_daily_counts(tickers: list, days: int = 5) -> dict:
+    """
+    {ticker: {'YYYY-MM-DD': count}} per-day mention counts over the last `days`
+    days. Used by the digest to detect mention acceleration (today vs. prior avg).
+    """
+    syms = [t.upper() for t in tickers if t]
+    if not syms:
+        return {}
+    placeholders = ",".join("?" * len(syms))
+    with _lock, _conn() as c:
+        rows = c.execute(
+            f"SELECT ticker, substr(posted_at,1,10) d, COUNT(*) n FROM mentions "
+            f"WHERE ticker IN ({placeholders}) AND posted_at >= date('now', ?) "
+            f"GROUP BY ticker, d",
+            syms + [f"-{int(days)} days"],
+        ).fetchall()
+    out: dict = {}
+    for ticker, d, n in rows:
+        out.setdefault(ticker, {})[d] = n
+    return out
+
+
 def mention_velocity(ticker: str, days: int = 7) -> list:
     """Daily mention counts for a ticker over the last `days` days."""
     with _lock, _conn() as c:
@@ -152,53 +193,141 @@ def first_mentions(ticker: str) -> list:
 
 def account_scorecard(min_calls: int = 3) -> list:
     """
-    Rank accounts by average forward return on their mentions (once ret_* are
-    backfilled by update_forward_returns). Trailing tags are excluded so spam
-    doesn't dilute the score.
+    Rank accounts by forward return on their mentions (once ret_* are backfilled
+    by update_forward_returns). Trailing-tag spam is excluded so it doesn't
+    dilute the score. win_rate_5d = share of calls that were green 5 trading
+    days out — an intuitive 'how often are they right' number.
     """
     with _lock, _conn() as c:
         rows = c.execute(
             "SELECT account, COUNT(*) calls, "
-            "AVG(ret_5d) avg5, AVG(ret_20d) avg20 FROM mentions "
-            "WHERE is_trailing_tag=0 AND ret_5d IS NOT NULL "
+            "AVG(ret_1d) avg1, AVG(ret_5d) avg5, AVG(ret_20d) avg20, "
+            "AVG(CASE WHEN ret_5d > 0 THEN 1.0 ELSE 0.0 END) win5 "
+            "FROM mentions WHERE is_trailing_tag=0 AND ret_5d IS NOT NULL "
             "GROUP BY account HAVING calls >= ? ORDER BY avg5 DESC",
             (min_calls,),
         ).fetchall()
-    return [{"account": r[0], "calls": r[1], "avg_ret_5d": r[2], "avg_ret_20d": r[3]}
-            for r in rows]
+
+    def r2(v):
+        return round(v, 2) if v is not None else None
+
+    return [{
+        "account": r[0],
+        "calls": r[1],
+        "avg_ret_1d": r2(r[2]),
+        "avg_ret_5d": r2(r[3]),
+        "avg_ret_20d": r2(r[4]),
+        "win_rate_5d": round(r[5] * 100, 0) if r[5] is not None else None,
+    } for r in rows]
 
 
-def update_forward_returns() -> int:
+def update_forward_returns(progress=None) -> dict:
     """
-    Backfill forward returns for mentions old enough to measure. Run on a
-    schedule (cron / APScheduler). Uses yfinance history. Returns rows updated.
+    Backfill forward returns for mentions old enough to measure.
+
+    Baseline is the CLOSE on the first trading day on/after the post date
+    (NOT price_at_mention, which is captured at scan time and can be days after
+    the post). ret_Nd = % change from that baseline N trading days later. History
+    is fetched once per ticker (grouped) to minimise yfinance calls.
+
+    Returns a summary dict:
+      {updated, tickers_total, tickers_ok, tickers_failed, rate_limited}
+    so a manual trigger can tell "Yahoo throttled us, try later" apart from
+    "no mentions are old enough yet".
     """
+    from datetime import timedelta
+
     import yfinance as yf  # local import keeps store.py usable without yfinance
+    try:
+        from market_data import _yf_session  # reuse SSL/proxy-tolerant session
+        session = _yf_session()
+    except Exception:
+        session = None
 
     with _lock, _conn() as c:
         pending = c.execute(
-            "SELECT id, ticker, posted_at, price_at_mention FROM mentions "
-            "WHERE ret_5d IS NULL AND price_at_mention IS NOT NULL AND posted_at IS NOT NULL"
+            "SELECT id, ticker, posted_at FROM mentions "
+            "WHERE ret_5d IS NULL AND posted_at IS NOT NULL"
         ).fetchall()
 
-    updated = 0
-    for mid, ticker, posted_at, px in pending:
+    summary = {"updated": 0, "tickers_total": 0, "tickers_ok": 0,
+               "tickers_failed": 0, "rate_limited": False}
+    if not pending:
+        return summary
+
+    by_ticker: dict = {}
+    for mid, ticker, posted_at in pending:
+        by_ticker.setdefault(ticker, []).append((mid, posted_at[:10]))
+    summary["tickers_total"] = len(by_ticker)
+
+    today = datetime.now(timezone.utc).date()
+
+    def _history(tk_symbol, start, end):
+        """Fetch with backoff; re-raise so rate-limits are distinguishable."""
+        last = None
+        for attempt in range(3):
+            try:
+                tk = yf.Ticker(tk_symbol, session=session) if session else yf.Ticker(tk_symbol)
+                return tk.history(start=start, end=end, auto_adjust=True)
+            except Exception as exc:  # noqa: BLE001
+                last = exc
+                if "rate" in str(exc).lower() or "too many" in str(exc).lower():
+                    summary["rate_limited"] = True
+                time.sleep(1.0 * (attempt + 1))
+        raise last if last else RuntimeError("history failed")
+
+    for ticker, items in by_ticker.items():
+        dates = [d for _, d in items if d]
+        if not dates:
+            continue
+        start = min(dates)
+        # End ~45 calendar days past the latest post (≈30 trading days for ret_20d),
+        # capped at today. yfinance ignores period when start/end are set.
         try:
-            start = posted_at[:10]
-            hist = yf.Ticker(ticker).history(start=start, period="2mo")
-            if hist.empty or not px:
+            end = min(datetime.fromisoformat(max(dates)).date() + timedelta(days=45), today)
+        except ValueError:
+            continue
+
+        try:
+            hist = _history(ticker, start, end.isoformat())
+        except Exception:
+            summary["tickers_failed"] += 1
+            continue
+        if hist is None or hist.empty:
+            # No data in range (e.g. post date still in the future vs. real market data)
+            continue
+
+        summary["tickers_ok"] += 1
+        closes = hist["Close"].tolist()
+        idx_dates = [d.date().isoformat() for d in hist.index]
+
+        rows = []
+        for mid, pd_date in items:
+            base_i = next((i for i, d in enumerate(idx_dates) if d >= pd_date), None)
+            if base_i is None:
                 continue
-            closes = hist["Close"].tolist()
+            base = closes[base_i]
+            if not base:
+                continue
 
             def ret(n):
-                return round((closes[n] - px) / px * 100, 2) if len(closes) > n else None
+                j = base_i + n
+                return round((closes[j] - base) / base * 100, 2) if j < len(closes) else None
 
+            rows.append((ret(1), ret(5), ret(20), mid))
+
+        if rows:
             with _lock, _conn() as c:
-                c.execute(
-                    "UPDATE mentions SET ret_1d=?, ret_5d=?, ret_20d=? WHERE id=?",
-                    (ret(1), ret(5), ret(20), mid),
+                c.executemany(
+                    "UPDATE mentions SET ret_1d=?, ret_5d=?, ret_20d=? WHERE id=?", rows
                 )
-            updated += 1
-        except Exception:
-            continue
-    return updated
+            summary["updated"] += sum(1 for r in rows if r[1] is not None)
+
+        if progress:
+            try:
+                progress(ticker, summary["updated"])
+            except Exception:
+                pass
+        time.sleep(0.3)  # be gentle with yfinance between tickers
+
+    return summary
