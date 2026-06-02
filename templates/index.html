@@ -68,6 +68,14 @@
         <!-- Quick presets -->
         <div class="flex flex-wrap items-center gap-2">
           <span class="text-gray-500 text-xs uppercase tracking-wider whitespace-nowrap">Scan window</span>
+          <button type="button" id="preset-1h" onclick="applyPreset('1h')"
+            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
+            Last 1h
+          </button>
+          <button type="button" id="preset-4h" onclick="applyPreset('4h')"
+            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
+            Last 4h
+          </button>
           <button type="button" id="preset-today" onclick="applyPreset('today')"
             class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
             Today
@@ -253,10 +261,21 @@
 
       const today = new Date();
       const fmt = (d) => d.toISOString().slice(0, 10); // YYYY-MM-DD
+      const fmtDT = (d) => d.toISOString().slice(0, 19);  // YYYY-MM-DDTHH:MM:SS
 
       // Per-account post cap scales with the window — a Today scan rarely needs
       // more than a couple dozen posts, while a 30-day pull may go deeper.
-      if (name === 'today') {
+      if (name === '1h') {
+        const d = new Date(today.getTime() - 60 * 60 * 1000);
+        _preset = { count: 20, since_date: fmtDT(d) };
+        customControls.classList.add('hidden');
+        label.textContent = `Up to 20 posts · last 1 hour`;
+      } else if (name === '4h') {
+        const d = new Date(today.getTime() - 4 * 60 * 60 * 1000);
+        _preset = { count: 30, since_date: fmtDT(d) };
+        customControls.classList.add('hidden');
+        label.textContent = `Up to 30 posts · last 4 hours`;
+      } else if (name === 'today') {
         _preset = { count: 40, since_date: fmt(today) };
         customControls.classList.add('hidden');
         label.textContent = `Up to 40 posts · since ${fmt(today)}`;
@@ -748,7 +767,13 @@
         `${combined.length} unique ticker(s)`,
         `max ${settings.max_posts || 10} posts`,
       ];
-      if (settings.since_date) metaParts.push(`since ${settings.since_date}`);
+      if (settings.since_date) {
+        const sd = settings.since_date;
+        const label = sd.includes('T')
+          ? `since ${new Date(sd + 'Z').toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`
+          : `since ${sd}`;
+        metaParts.push(label);
+      }
       metaParts.push(new Date(result.run_at).toLocaleString());
       document.getElementById('metaBar').textContent = metaParts.join(' · ');
 

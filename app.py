@@ -204,14 +204,14 @@ def scrape():
     except (TypeError, ValueError):
         count = 10
 
-    # Optional since_date — ISO date string "YYYY-MM-DD"
+    # Optional since_date — ISO date string "YYYY-MM-DD" or datetime "YYYY-MM-DDTHH:MM:SS"
     since_date = None
     since_raw = body.get("since_date", "").strip()
     if since_raw:
         try:
             since_date = datetime.fromisoformat(since_raw).replace(tzinfo=timezone.utc)
         except ValueError:
-            return jsonify({"error": f"Invalid since_date '{since_raw}'. Use YYYY-MM-DD."}), 400
+            return jsonify({"error": f"Invalid since_date '{since_raw}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS."}), 400
 
     scan_id = str(uuid.uuid4())
     q: queue.Queue = queue.Queue()
