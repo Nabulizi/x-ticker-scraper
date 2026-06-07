@@ -16,8 +16,10 @@ import hashlib
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
+from zoneinfo import ZoneInfo
 
 DB_PATH = Path(__file__).parent / "data" / "scraper.db"
 _lock = threading.Lock()
@@ -66,6 +68,24 @@ def _conn():
     c = sqlite3.connect(DB_PATH, timeout=10)
     c.executescript(_SCHEMA)
     return c
+
+
+def _tz_or_utc(tz_name: Optional[str]):
+    if not tz_name:
+        return timezone.utc
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return timezone.utc
+
+
+def _parse_posted_at(ts: Optional[str]):
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except Exception:
+        return None
 
 
 def _post_id(account: str, post: dict) -> str:
@@ -128,7 +148,7 @@ def record_run(run: dict) -> None:
                     )
 
 
-def ticker_first_seen(tickers: list) -> dict:
+def ticker_first_seen(tickers: list, tz_name: Optional[str] = None) -> dict:
     """
     {ticker: 'YYYY-MM-DD'} earliest mention date across ALL history.
     Used by the digest to flag names appearing for the very first time today.
@@ -139,15 +159,27 @@ def ticker_first_seen(tickers: list) -> dict:
     placeholders = ",".join("?" * len(syms))
     with _lock, _conn() as c:
         rows = c.execute(
-            f"SELECT ticker, substr(MIN(posted_at),1,10) FROM mentions "
+            f"SELECT ticker, MIN(posted_at) FROM mentions "
             f"WHERE ticker IN ({placeholders}) AND posted_at IS NOT NULL "
             f"GROUP BY ticker",
             syms,
         ).fetchall()
-    return {r[0]: r[1] for r in rows if r[1]}
+    tz = _tz_or_utc(tz_name)
+    out = {}
+    for ticker, first_at in rows:
+        parsed = _parse_posted_at(first_at)
+        if parsed is None:
+            continue
+        out[ticker] = parsed.astimezone(tz).strftime("%Y-%m-%d")
+    return out
 
 
-def ticker_daily_counts(tickers: list, days: int = 5) -> dict:
+def ticker_daily_counts(
+    tickers: list,
+    days: int = 5,
+    tz_name: Optional[str] = None,
+    today: Optional[str] = None,
+) -> dict:
     """
     {ticker: {'YYYY-MM-DD': count}} per-day mention counts over the last `days`
     days. Used by the digest to detect mention acceleration (today vs. prior avg).
@@ -156,16 +188,47 @@ def ticker_daily_counts(tickers: list, days: int = 5) -> dict:
     if not syms:
         return {}
     placeholders = ",".join("?" * len(syms))
+
+    if not tz_name:
+        with _lock, _conn() as c:
+            rows = c.execute(
+                f"SELECT ticker, substr(posted_at,1,10) d, COUNT(*) n FROM mentions "
+                f"WHERE ticker IN ({placeholders}) AND posted_at >= date('now', ?) "
+                f"GROUP BY ticker, d",
+                syms + [f"-{int(days)} days"],
+            ).fetchall()
+        out: dict = {}
+        for ticker, d, n in rows:
+            out.setdefault(ticker, {})[d] = n
+        return out
+
+    tz = _tz_or_utc(tz_name)
+    if today:
+        today_local = datetime.fromisoformat(today).date()
+    else:
+        today_local = datetime.now(tz).date()
+    start_local = today_local - timedelta(days=int(days))
+    start_utc = datetime.combine(start_local, datetime.min.time(), tz).astimezone(timezone.utc).isoformat()
+
     with _lock, _conn() as c:
         rows = c.execute(
-            f"SELECT ticker, substr(posted_at,1,10) d, COUNT(*) n FROM mentions "
-            f"WHERE ticker IN ({placeholders}) AND posted_at >= date('now', ?) "
-            f"GROUP BY ticker, d",
-            syms + [f"-{int(days)} days"],
+            f"SELECT ticker, posted_at FROM mentions "
+            f"WHERE ticker IN ({placeholders}) AND posted_at >= ? AND posted_at IS NOT NULL",
+            syms + [start_utc],
         ).fetchall()
+
     out: dict = {}
-    for ticker, d, n in rows:
-        out.setdefault(ticker, {})[d] = n
+    for ticker, posted_at in rows:
+        parsed = _parse_posted_at(posted_at)
+        if parsed is None:
+            continue
+        local_day = parsed.astimezone(tz).date()
+        if local_day < start_local or local_day > today_local:
+            continue
+        day_key = local_day.isoformat()
+        bucket = out.setdefault(ticker, {})
+        bucket[day_key] = bucket.get(day_key, 0) + 1
+
     return out
 
 

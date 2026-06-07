@@ -3,7 +3,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from dotenv import load_dotenv
 from lxml import html as lxml_html
@@ -16,6 +16,7 @@ SESSION_FILE = Path(__file__).parent / "session.json"
 
 # Valid X username: 1–50 alphanumeric/underscore characters
 _USERNAME_RE = re.compile(r'^[A-Za-z0-9_]{1,50}$')
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _emit(progress, msg: dict) -> None:
@@ -70,6 +71,8 @@ def validate_username(username: str) -> str:
 # scroll logic and just borrow the hardening ideas.)
 
 _STEALTH_ARGS = ["--disable-blink-features=AutomationControlled"]
+HEADLESS_REFRESH_TIMEOUT = 35
+VISIBLE_REFRESH_TIMEOUT = 180
 
 _STEALTH_INIT_JS = """
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
@@ -148,6 +151,265 @@ async def _apply_stealth(context) -> None:
     await context.add_init_script(_STEALTH_INIT_JS)
 
 
+async def _wait_for_visible(page, selectors: list[str], timeout: int = 20000):
+    last_exc = None
+    for selector in selectors:
+        try:
+            return await page.wait_for_selector(selector, state="visible", timeout=timeout)
+        except PWTimeout as exc:
+            last_exc = exc
+    raise last_exc or PWTimeout("No matching selector became visible")
+
+
+async def _wait_for_first_locator(
+    page,
+    locator_builders: list[Callable],
+    timeout: int = 20000,
+):
+    last_exc = None
+    per_try_timeout = max(1000, timeout // max(len(locator_builders), 1))
+    for build in locator_builders:
+        try:
+            locator = build(page).first
+            await locator.wait_for(state="visible", timeout=per_try_timeout)
+            return locator
+        except PWTimeout:
+            last_exc = PWTimeout("No matching locator became visible")
+            continue
+    raise last_exc or PWTimeout("No matching locator became visible")
+
+
+async def _click_first_available(page, locator_builders: list[Callable], timeout: int = 8000) -> bool:
+    per_try_timeout = max(800, timeout // max(len(locator_builders), 1))
+    for build in locator_builders:
+        try:
+            locator = build(page).first
+            await locator.wait_for(state="visible", timeout=per_try_timeout)
+            await locator.click()
+            return True
+        except PWTimeout:
+            continue
+    return False
+
+
+def _normalize_button_text(text: str) -> str:
+    return _WHITESPACE_RE.sub(" ", (text or "").strip()).lower()
+
+
+async def _click_button_by_text(page, names: list[str], timeout: int = 8000) -> bool:
+    deadline = asyncio.get_running_loop().time() + (timeout / 1000)
+    normalized_names = {_normalize_button_text(name) for name in names}
+    while asyncio.get_running_loop().time() < deadline:
+        buttons = await page.locator("button").all()
+        for button in buttons:
+            try:
+                if not await button.is_visible():
+                    continue
+                text = _normalize_button_text(await button.inner_text())
+                if text in normalized_names:
+                    await button.click()
+                    return True
+            except Exception:
+                continue
+        await asyncio.sleep(0.2)
+    return False
+
+
+async def _wait_for_signed_in(page, timeout: int = 120_000) -> None:
+    """
+    Treat a signed-in shell as success even if X uses a different post-login URL.
+    """
+    selectors = [
+        '[data-testid="SideNav_AccountSwitcher_Button"]',
+        '[data-testid="AppTabBar_Home_Link"]',
+        'a[aria-label="Home"]',
+    ]
+    last_exc = None
+    per_try_timeout = max(1500, timeout // max(len(selectors), 1))
+    for selector in selectors:
+        try:
+            await page.wait_for_selector(selector, state="visible", timeout=per_try_timeout)
+            return
+        except PWTimeout as exc:
+            last_exc = exc
+    raise last_exc or PWTimeout("Signed-in X shell did not appear")
+
+
+def _get_login_method() -> str:
+    method = os.getenv("X_LOGIN_METHOD", "auto").strip().lower()
+    if method not in {"auto", "native", "google"}:
+        return "auto"
+    return method
+
+
+def _get_google_credentials(
+    *,
+    x_username: str = "",
+    x_password: str = "",
+    x_email: str = "",
+) -> tuple[str, str]:
+    google_email = os.getenv("GOOGLE_EMAIL", "").strip() or x_email or x_username
+    google_password = os.getenv("GOOGLE_PASSWORD", "").strip() or x_password
+    if not google_email or not google_password:
+        raise ValueError(
+            "Google sign-in requires GOOGLE_EMAIL and GOOGLE_PASSWORD, "
+            "or compatible X_EMAIL/X_PASSWORD values in .env."
+        )
+    return google_email, google_password
+
+
+def _use_google_login() -> bool:
+    return _get_login_method() == "google"
+
+
+def _should_prefer_google_login(
+    *,
+    x_username: str = "",
+    x_password: str = "",
+    x_email: str = "",
+) -> bool:
+    method = _get_login_method()
+    if method == "google":
+        return True
+    if method == "native":
+        return False
+    return _google_credentials_available(
+        x_username=x_username,
+        x_password=x_password,
+        x_email=x_email,
+    )
+
+
+def _google_credentials_available(
+    *,
+    x_username: str = "",
+    x_password: str = "",
+    x_email: str = "",
+) -> bool:
+    try:
+        _get_google_credentials(
+            x_username=x_username,
+            x_password=x_password,
+            x_email=x_email,
+        )
+        return True
+    except ValueError:
+        return False
+
+
+async def _complete_google_popup_login(
+    page,
+    *,
+    google_email: str,
+    google_password: str,
+    progress=None,
+) -> None:
+    _emit(progress, {
+        "type": "progress",
+        "message": "X login page loaded. Opening Google sign-in popup...",
+    })
+    try:
+        async with page.expect_popup(timeout=10000) as popup_info:
+            clicked = await _click_first_available(
+                page,
+                [
+                    lambda p: p.get_by_role("button", name="Continue with Google"),
+                    lambda p: p.get_by_text("Continue with Google", exact=True),
+                ],
+                timeout=4000,
+            )
+            if not clicked:
+                clicked = await _click_button_by_text(page, ["Continue with Google"], timeout=4000)
+            if not clicked:
+                raise RuntimeError("Continue with Google button did not appear.")
+        popup = await popup_info.value
+    except Exception as exc:
+        raise RuntimeError("Google sign-in popup did not open.") from exc
+
+    try:
+        await popup.wait_for_load_state("domcontentloaded", timeout=15000)
+        _emit(progress, {
+            "type": "progress",
+            "message": "Google popup opened. Entering Google email...",
+        })
+        email_field = await _wait_for_first_locator(
+            popup,
+            [
+                lambda p: p.get_by_label("Email or phone"),
+                lambda p: p.get_by_placeholder("Email or phone"),
+                lambda p: p.locator('input[type="email"]'),
+                lambda p: p.locator('input[name="identifier"]'),
+            ],
+            timeout=20000,
+        )
+        await email_field.fill(google_email)
+        await asyncio.sleep(0.4)
+
+        clicked = await _click_first_available(
+            popup,
+            [
+                lambda p: p.get_by_role("button", name="Next"),
+                lambda p: p.locator('button:has-text("Next")'),
+            ],
+            timeout=8000,
+        )
+        if not clicked:
+            clicked = await _click_button_by_text(popup, ["Next"], timeout=4000)
+        if not clicked:
+            await popup.keyboard.press("Enter")
+
+        _emit(progress, {
+            "type": "progress",
+            "message": "Google email submitted. Waiting for password field...",
+        })
+        pw_field = await _wait_for_first_locator(
+            popup,
+            [
+                lambda p: p.get_by_label("Enter your password"),
+                lambda p: p.get_by_label("Password"),
+                lambda p: p.get_by_placeholder("Enter your password"),
+                lambda p: p.locator('input[type="password"]'),
+                lambda p: p.locator('input[name="Passwd"]'),
+            ],
+            timeout=20000,
+        )
+        await pw_field.fill(google_password)
+        await asyncio.sleep(0.4)
+
+        clicked = await _click_first_available(
+            popup,
+            [
+                lambda p: p.get_by_role("button", name="Next"),
+                lambda p: p.locator('button:has-text("Next")'),
+            ],
+            timeout=8000,
+        )
+        if not clicked:
+            clicked = await _click_button_by_text(popup, ["Next"], timeout=4000)
+        if not clicked:
+            await popup.keyboard.press("Enter")
+
+        _emit(progress, {
+            "type": "progress",
+            "message": "Google password submitted. Waiting for X to finish sign-in...",
+        })
+        try:
+            await popup.wait_for_event("close", timeout=90000)
+        except PWTimeout:
+            await popup.wait_for_load_state("networkidle", timeout=15000)
+            if not popup.is_closed():
+                try:
+                    await popup.close()
+                except Exception:
+                    pass
+    finally:
+        if "popup" in locals() and popup and not popup.is_closed():
+            try:
+                await popup.close()
+            except Exception:
+                pass
+
+
 async def _do_login(page, username: str, password: str, email: str = "", progress=None) -> None:
     """
     Shared login logic for both headless and visible-browser paths.
@@ -156,28 +418,75 @@ async def _do_login(page, username: str, password: str, email: str = "", progres
     """
     print("[→] Logging in to X...")
     # Use the direct login flow URL (avoids the onboarding modal redirect)
+    _emit(progress, {
+        "type": "progress",
+        "message": "Opening the X login page...",
+    })
     await page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded")
     await asyncio.sleep(2)
 
+    if _should_prefer_google_login(
+        x_username=username,
+        x_password=password,
+        x_email=email,
+    ):
+        google_email, google_password = _get_google_credentials(
+            x_username=username,
+            x_password=password,
+            x_email=email,
+        )
+        await _complete_google_popup_login(
+            page,
+            google_email=google_email,
+            google_password=google_password,
+            progress=progress,
+        )
+        await _wait_for_signed_in(page, timeout=120_000)
+        print("[✓] Login successful")
+        return
+
     # Step 1: username / email field
     try:
-        un_field = await page.wait_for_selector(
-            'input[autocomplete="username"], input[name="text"]',
-            state="visible", timeout=20000,
+        _emit(progress, {
+            "type": "progress",
+            "message": "X login page loaded. Looking for the username field...",
+        })
+        un_field = await _wait_for_first_locator(
+            page,
+            [
+                lambda p: p.get_by_label("Email or username", exact=True),
+                lambda p: p.get_by_label("Phone, email, or username", exact=True),
+                lambda p: p.get_by_placeholder("Email or username", exact=True),
+                lambda p: p.get_by_placeholder("Phone, email, or username", exact=True),
+                lambda p: p.locator('input[autocomplete="username"]'),
+                lambda p: p.locator('input[name="text"]'),
+                lambda p: p.locator('input[data-testid="ocfEnterTextTextInput"]'),
+                lambda p: p.locator('input[type="text"]'),
+            ],
+            timeout=20000,
         )
         await un_field.fill(username)
+        _emit(progress, {
+            "type": "progress",
+            "message": "Entered the X username/email. Continuing to password...",
+        })
         await asyncio.sleep(0.4)
     except PWTimeout:
         raise RuntimeError("X login form did not appear — X may be temporarily blocking logins.")
 
-    # Click the "Next" button
-    try:
-        next_btn = await page.wait_for_selector(
-            '[data-testid="LoginForm_Login_Button"], [role="button"]:has-text("Next")',
-            state="visible", timeout=8000,
-        )
-        await next_btn.click()
-    except PWTimeout:
+    # Click the "Next" / "Continue" button
+    clicked = await _click_first_available(
+        page,
+        [
+            lambda p: p.get_by_role("button", name="Next"),
+            lambda p: p.get_by_role("button", name="Continue"),
+            lambda p: p.locator('[data-testid="LoginForm_Login_Button"]'),
+            lambda p: p.locator('button:has-text("Next")'),
+            lambda p: p.locator('button:has-text("Continue")'),
+        ],
+        timeout=8000,
+    )
+    if not clicked:
         await page.keyboard.press("Enter")
     await asyncio.sleep(1.5)
 
@@ -195,23 +504,43 @@ async def _do_login(page, username: str, password: str, email: str = "", progres
 
     # Step 2: password field
     try:
-        pw_field = await page.wait_for_selector(
-            'input[name="password"], input[autocomplete="current-password"]',
-            state="visible", timeout=15000,
+        _emit(progress, {
+            "type": "progress",
+            "message": "Waiting for the X password field...",
+        })
+        pw_field = await _wait_for_first_locator(
+            page,
+            [
+                lambda p: p.get_by_label("Password", exact=True),
+                lambda p: p.get_by_placeholder("Password", exact=True),
+                lambda p: p.locator('input[name="password"]'),
+                lambda p: p.locator('input[autocomplete="current-password"]'),
+                lambda p: p.locator('input[type="password"]'),
+            ],
+            timeout=15000,
         )
         await pw_field.fill(password)
+        _emit(progress, {
+            "type": "progress",
+            "message": "Entered the X password. Submitting login...",
+        })
         await asyncio.sleep(0.4)
     except PWTimeout:
         raise RuntimeError("Password field did not appear after entering username.")
 
     # Click "Log in"
-    try:
-        login_btn = await page.wait_for_selector(
-            '[data-testid="LoginForm_Login_Button"], [role="button"]:has-text("Log in")',
-            state="visible", timeout=8000,
-        )
-        await login_btn.click()
-    except PWTimeout:
+    clicked = await _click_first_available(
+        page,
+        [
+            lambda p: p.get_by_role("button", name="Log in"),
+            lambda p: p.get_by_role("button", name="Login"),
+            lambda p: p.locator('[data-testid="LoginForm_Login_Button"]'),
+            lambda p: p.locator('button:has-text("Log in")'),
+            lambda p: p.locator('button:has-text("Login")'),
+        ],
+        timeout=8000,
+    )
+    if not clicked:
         await page.keyboard.press("Enter")
     await asyncio.sleep(2)
 
@@ -228,8 +557,12 @@ async def _do_login(page, username: str, password: str, email: str = "", progres
     except PWTimeout:
         pass
 
-    # Wait for successful redirect to home (up to 2 min covers manual 2FA)
-    await page.wait_for_url("**/home", timeout=120_000)
+    # Wait for the signed-in shell, not just one exact URL shape.
+    _emit(progress, {
+        "type": "progress",
+        "message": "Credentials submitted. Waiting for X to finish signing in...",
+    })
+    await _wait_for_signed_in(page, timeout=120_000)
     print("[✓] Login successful")
 
 
@@ -238,27 +571,126 @@ async def _login(page, username: str, password: str, progress=None) -> None:
     await _do_login(page, username, password, email=x_email, progress=progress)
 
 
+def _get_x_credentials() -> tuple[str, str, str]:
+    x_user = os.getenv("X_USERNAME", "").strip()
+    x_pass = os.getenv("X_PASSWORD", "").strip()
+    x_email = os.getenv("X_EMAIL", "").strip()
+    if not x_user or not x_pass:
+        raise ValueError("Set X_USERNAME and X_PASSWORD in .env")
+    return x_user, x_pass, x_email
+
+
+async def _save_login_session(*, headless: bool, slow_mo: int = 0, progress=None) -> None:
+    x_user, x_pass, x_email = _get_x_credentials()
+    mode = "headless" if headless else "visible"
+    if headless and _get_login_method() == "google":
+        raise RuntimeError("Google sign-in is only supported in visible-browser mode.")
+    _emit(progress, {
+        "type": "progress",
+        "message": f"Launching {mode} X login browser...",
+    })
+
+    async with async_playwright() as pw:
+        _emit(progress, {
+            "type": "progress",
+            "message": f"{mode.capitalize()} Playwright runtime started. Launching Chrome...",
+        })
+        browser = await _launch_stealth_browser(pw, headless=headless, slow_mo=slow_mo)
+        try:
+            context = await browser.new_context(**_stealth_context_kwargs(browser))
+            await _apply_stealth(context)
+            page = await context.new_page()
+            await _do_login(page, x_user, x_pass, email=x_email, progress=progress)
+
+            try:
+                await _wait_for_signed_in(page, timeout=10000)
+            except PWTimeout as exc:
+                raise SessionExpired("X login did not complete successfully.") from exc
+
+            await context.storage_state(path=str(SESSION_FILE))
+        finally:
+            await browser.close()
+
+
+async def _refresh_session(progress=None) -> None:
+    """
+    Best-effort silent login path for expired/missing sessions.
+    Falls back to an automatic visible-browser login if headless auth is blocked.
+    """
+    _emit(progress, {
+        "type": "progress",
+        "message": "Cached X session unavailable — attempting automatic re-login...",
+    })
+    x_user, x_pass, x_email = _get_x_credentials()
+    if _should_prefer_google_login(
+        x_username=x_user,
+        x_password=x_pass,
+        x_email=x_email,
+    ):
+        _emit(progress, {
+            "type": "progress",
+            "message": "Using Google-based X sign-in first. Opening a visible browser...",
+        })
+        try:
+            await asyncio.wait_for(
+                _save_login_session(headless=False, slow_mo=80, progress=progress),
+                timeout=VISIBLE_REFRESH_TIMEOUT,
+            )
+        except ValueError as exc:
+            raise SessionExpired(
+                "No X session found and Google-based automatic login is unavailable. "
+                "Set GOOGLE_EMAIL and GOOGLE_PASSWORD in .env, or click 'Connect X Account'."
+            ) from exc
+        except Exception as exc:
+            raise SessionExpired(
+                "Automatic Google-based X login failed. "
+                f"Reason: {exc}. Click 'Connect X Account' if you want to retry the visible flow manually."
+            ) from exc
+        _emit(progress, {
+            "type": "progress",
+            "message": "Automatic X login succeeded. Refreshing session...",
+        })
+        return
+
+    try:
+        await asyncio.wait_for(
+            _save_login_session(headless=True, slow_mo=60, progress=progress),
+            timeout=HEADLESS_REFRESH_TIMEOUT,
+        )
+    except ValueError as exc:
+        raise SessionExpired(
+            "No X session found and automatic login is unavailable. Set X_USERNAME and X_PASSWORD in .env, or click 'Connect X Account'."
+        ) from exc
+    except Exception as headless_exc:
+        _emit(progress, {
+            "type": "progress",
+            "message": "Headless X login was blocked — opening a visible browser to finish automatic login...",
+        })
+        try:
+            await asyncio.wait_for(
+                _save_login_session(headless=False, slow_mo=80, progress=progress),
+                timeout=VISIBLE_REFRESH_TIMEOUT,
+            )
+        except Exception as visible_exc:
+            raise SessionExpired(
+                "Automatic X login failed in both headless and visible modes. "
+                f"Headless: {headless_exc}. Visible: {visible_exc}. "
+                "Click 'Connect X Account' if you want to retry the visible flow manually."
+            ) from visible_exc
+    _emit(progress, {
+        "type": "progress",
+        "message": "Automatic X login succeeded. Refreshing session...",
+    })
+
+
 async def _manual_login() -> None:
     """
     Fully-automatic login using credentials from .env.
     Opens a real Chrome window (avoids automation detection).
     Saves session.json on success.
     """
-    x_user = os.getenv("X_USERNAME", "").strip()
-    x_pass = os.getenv("X_PASSWORD", "").strip()
-    x_email = os.getenv("X_EMAIL", "").strip()
-    if not x_user or not x_pass:
-        raise ValueError("Set X_USERNAME and X_PASSWORD in .env")
-
-    async with async_playwright() as pw:
-        browser = await _launch_stealth_browser(pw, headless=False, slow_mo=80)
-        context = await browser.new_context(**_stealth_context_kwargs(browser))
-        await _apply_stealth(context)
-        page = await context.new_page()
-        await _do_login(page, x_user, x_pass, email=x_email)
-        await context.storage_state(path=str(SESSION_FILE))
-        await browser.close()
-        print(f"[✓] Session saved to {SESSION_FILE}. You can now use the web app.")
+    await _save_login_session(headless=False, slow_mo=80)
+    print(f"[✓] Session saved to {SESSION_FILE}. You can now use the web app.")
 
 
 def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
@@ -697,9 +1129,7 @@ async def scrape_accounts(
 
     async with async_playwright() as pw:
         if not SESSION_FILE.exists():
-            raise SessionExpired(
-                "No X session found. Click 'Connect X Account' to log in first."
-            )
+            await _refresh_session(progress=progress)
 
         browser = await _launch_stealth_browser(pw, headless=True, slow_mo=60)
         ctx_kwargs = _stealth_context_kwargs(browser)
@@ -717,9 +1147,7 @@ async def scrape_accounts(
         # to fully hydrate before we conclude the session is expired.
         logged_in = None
         try:
-            await page.wait_for_selector(
-                '[data-testid="SideNav_AccountSwitcher_Button"]', timeout=10000
-            )
+            await _wait_for_signed_in(page, timeout=10000)
             logged_in = True
         except PWTimeout:
             logged_in = False
@@ -727,9 +1155,23 @@ async def scrape_accounts(
         if not logged_in:
             await browser.close()
             SESSION_FILE.unlink(missing_ok=True)
-            raise SessionExpired(
-                "X session has expired. Click 'Connect X Account' to log in again."
-            )
+            await _refresh_session(progress=progress)
+            browser = await _launch_stealth_browser(pw, headless=True, slow_mo=60)
+            ctx_kwargs = _stealth_context_kwargs(browser)
+            ctx_kwargs["storage_state"] = str(SESSION_FILE)
+            context = await browser.new_context(**ctx_kwargs)
+            await _apply_stealth(context)
+            page = await context.new_page()
+            page2 = await context.new_page()
+            await page.goto("https://x.com/home", wait_until="domcontentloaded")
+            try:
+                await _wait_for_signed_in(page, timeout=10000)
+            except PWTimeout as exc:
+                await browser.close()
+                SESSION_FILE.unlink(missing_ok=True)
+                raise SessionExpired(
+                    "Automatic X login refreshed the session, but X still did not restore access. Click 'Connect X Account' to finish a visible login."
+                ) from exc
 
         print("[✓] Using cached session")
         _emit(progress, {"type": "progress", "message": "Using cached X session"})

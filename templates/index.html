@@ -11,54 +11,55 @@
     ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
     .tab-active { border-color: #3b82f6; color: #fff; }
     .tab-inactive { border-color: transparent; color: #6b7280; }
+    .ticker-accent { color: #7dd3fc; }
   </style>
 </head>
-<body class="bg-gray-950 text-gray-100 min-h-screen font-mono text-sm">
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans text-sm antialiased">
 
-  <div class="max-w-6xl mx-auto px-6 py-8">
+  <div class="max-w-7xl mx-auto px-6 py-8">
 
     <!-- Header -->
     <div class="flex items-center justify-between border-b border-gray-800 pb-4 mb-8">
       <div>
         <h1 class="text-xl font-bold tracking-tight text-white">X Stock Ticker Monitor</h1>
-        <p class="text-gray-500 text-xs mt-0.5">Scan X accounts · read full posts · extract US-listed tickers · export JSON</p>
+        <p class="text-slate-400 text-sm mt-1">Scan X accounts, read the full posts, and surface the tickers that actually deserve attention.</p>
       </div>
       <div class="flex items-center gap-2">
-        <span class="text-xs text-gray-600 bg-gray-900 border border-gray-800 px-2 py-1 rounded">US stocks only</span>
+        <span class="text-xs text-slate-400 bg-slate-900 border border-slate-800 px-2 py-1 rounded">US stocks only</span>
         <span id="xStatusBadge" class="text-xs px-2 py-1 rounded border hidden"></span>
         <button id="connectXBtn" onclick="connectX()"
-          class="hidden text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 px-3 py-1 rounded transition-colors">
+          class="hidden text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-3 py-1 rounded transition-colors">
           Connect X Account
         </button>
       </div>
     </div>
 
     <!-- Input form -->
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-6">
-      <label class="block text-gray-300 font-semibold mb-2 text-xs uppercase tracking-wider">X Accounts to Monitor</label>
+    <div class="bg-slate-900/95 border border-slate-800 rounded-xl p-5 mb-6 shadow-[0_12px_40px_rgba(15,23,42,0.18)]">
+      <label class="block text-slate-200 font-semibold mb-2 text-xs uppercase tracking-[0.16em]">X Accounts to Monitor</label>
       <textarea id="usernames" rows="4"
         placeholder="One username per line, or comma-separated:&#10;&#10;chamath&#10;unusual_whales, Mr_Derivatives"
-        class="w-full bg-gray-800 text-gray-100 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:border-blue-500 resize-none placeholder-gray-600 leading-relaxed"></textarea>
+        class="w-full bg-slate-950/70 text-slate-100 border border-slate-700 rounded-lg p-3 text-sm focus:outline-none focus:border-sky-500 resize-none placeholder-slate-500 leading-relaxed"></textarea>
 
       <!-- Watchlists -->
       <div class="mt-3 pt-3 border-t border-gray-800">
         <div class="flex items-center gap-2 mb-2">
-          <span class="text-gray-600 text-xs uppercase tracking-wider">Saved</span>
+          <span class="text-slate-500 text-xs uppercase tracking-[0.16em]">Saved</span>
           <div id="watchlistChips" class="flex flex-wrap gap-1.5"></div>
         </div>
         <div class="flex items-center gap-2">
           <button type="button" id="saveWlBtn" onclick="showSaveWatchlist()"
-            class="text-xs text-gray-600 hover:text-gray-300 border border-gray-800 hover:border-gray-600 px-2.5 py-1 rounded-lg transition-colors">
+            class="text-xs text-slate-400 hover:text-slate-100 border border-slate-700 hover:border-slate-500 px-2.5 py-1 rounded-lg transition-colors">
             + Save current
           </button>
           <div id="saveWlInline" class="hidden flex items-center gap-2">
             <input id="watchlistNameInput" type="text" maxlength="50" placeholder="Name..."
               onkeydown="if(event.key==='Enter')confirmSaveWatchlist();if(event.key==='Escape')hideSaveWatchlist();"
-              class="bg-gray-800 text-gray-200 border border-gray-700 rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:border-blue-500 w-40" />
+              class="bg-slate-950/70 text-slate-100 border border-slate-700 rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:border-sky-500 w-40" />
             <button type="button" onclick="confirmSaveWatchlist()"
-              class="text-xs text-blue-400 hover:text-blue-300 px-2 py-1 transition-colors">Save</button>
+              class="text-xs text-sky-300 hover:text-sky-200 px-2 py-1 transition-colors">Save</button>
             <button type="button" onclick="hideSaveWatchlist()"
-              class="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors">Cancel</button>
+              class="text-xs text-slate-500 hover:text-slate-300 px-2 py-1 transition-colors">Cancel</button>
           </div>
         </div>
       </div>
@@ -67,42 +68,42 @@
       <div class="mt-4 pt-4 border-t border-gray-800 space-y-3">
         <!-- Quick presets -->
         <div class="flex flex-wrap items-center gap-2">
-          <span class="text-gray-500 text-xs uppercase tracking-wider whitespace-nowrap">Scan window</span>
+          <span class="text-slate-500 text-xs uppercase tracking-[0.16em] whitespace-nowrap">Scan window</span>
           <button type="button" id="preset-1h" onclick="applyPreset('1h')"
-            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
+            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-slate-700 text-slate-200 hover:border-sky-500 hover:text-sky-200 transition-colors">
             Last 1h
           </button>
           <button type="button" id="preset-4h" onclick="applyPreset('4h')"
-            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
+            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-slate-700 text-slate-200 hover:border-sky-500 hover:text-sky-200 transition-colors">
             Last 4h
           </button>
           <button type="button" id="preset-today" onclick="applyPreset('today')"
-            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
+            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-slate-700 text-slate-200 hover:border-sky-500 hover:text-sky-200 transition-colors">
             Today
           </button>
           <button type="button" id="preset-3d" onclick="applyPreset('3d')"
-            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
+            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-slate-700 text-slate-200 hover:border-sky-500 hover:text-sky-200 transition-colors">
             Last 3 days
           </button>
           <button type="button" id="preset-7d" onclick="applyPreset('7d')"
-            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
+            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-slate-700 text-slate-200 hover:border-sky-500 hover:text-sky-200 transition-colors">
             Last 7 days
           </button>
           <button type="button" id="preset-30d" onclick="applyPreset('30d')"
-            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
+            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-slate-700 text-slate-200 hover:border-sky-500 hover:text-sky-200 transition-colors">
             Last 30 days
           </button>
           <button type="button" id="preset-custom" onclick="applyPreset('custom')"
-            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors">
+            class="preset-btn text-xs px-3 py-1.5 rounded-lg border border-slate-700 text-slate-200 hover:border-sky-500 hover:text-sky-200 transition-colors">
             Custom
           </button>
         </div>
         <!-- Manual controls (visible in custom mode only) -->
         <div id="customControls" class="hidden flex flex-wrap items-center gap-4">
           <div class="flex items-center gap-2">
-            <label class="text-gray-500 text-xs uppercase tracking-wider whitespace-nowrap">Max posts</label>
+            <label class="text-slate-500 text-xs uppercase tracking-[0.16em] whitespace-nowrap">Max posts</label>
             <select id="postCount"
-              class="bg-gray-800 text-gray-200 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500">
+              class="bg-slate-950/70 text-slate-100 border border-slate-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-sky-500">
               <option value="10">10 posts</option>
               <option value="25">25 posts</option>
               <option value="50">50 posts</option>
@@ -111,14 +112,14 @@
             </select>
           </div>
           <div class="flex items-center gap-2">
-            <label class="text-gray-500 text-xs uppercase tracking-wider whitespace-nowrap">Since date</label>
+            <label class="text-slate-500 text-xs uppercase tracking-[0.16em] whitespace-nowrap">Since date</label>
             <input type="date" id="sinceDate"
-              class="bg-gray-800 text-gray-200 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+              class="bg-slate-950/70 text-slate-100 border border-slate-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-sky-500"
               title="Stop collecting posts older than this date" />
           </div>
         </div>
         <!-- Summary label shown for presets -->
-        <div id="presetLabel" class="text-xs text-blue-400"></div>
+        <div id="presetLabel" class="text-xs text-sky-300"></div>
       </div>
 
       <div class="mt-4 flex items-center gap-2">
@@ -135,7 +136,7 @@
     </div>
 
     <!-- Progress area -->
-    <div id="progressArea" class="hidden bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
+    <div id="progressArea" class="hidden bg-slate-900/95 border border-slate-800 rounded-xl p-4 mb-6">
       <div class="flex items-center gap-2 mb-2">
         <svg class="animate-spin h-4 w-4 text-blue-400 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
@@ -163,7 +164,7 @@
 
       <!-- Meta + download -->
       <div class="flex items-center justify-between">
-        <div id="metaBar" class="text-gray-400 text-xs"></div>
+        <div id="metaBar" class="text-slate-300 text-xs"></div>
         <div class="flex items-center gap-2">
           <button onclick="downloadCSV()"
             class="text-xs text-gray-400 hover:text-white border border-gray-700 hover:border-gray-500 px-3 py-1.5 rounded-lg transition-colors">
@@ -194,12 +195,14 @@
 
         <!-- Ranked view -->
         <div id="view-ranked" class="hidden">
-          <div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <div class="bg-slate-900/95 border border-slate-800 rounded-xl overflow-x-auto">
             <table class="w-full">
               <thead>
-                <tr class="border-b border-gray-800 text-gray-500 text-xs uppercase tracking-wider">
+                <tr class="border-b border-slate-800 text-slate-400 text-xs uppercase tracking-[0.16em]">
                   <th class="text-left px-4 py-3 w-8">#</th>
                   <th class="text-left px-4 py-3">Ticker</th>
+                  <th class="text-left px-4 py-3">Signal</th>
+                  <th class="text-left px-4 py-3">Mood</th>
                   <th class="text-left px-4 py-3">Price</th>
                   <th class="text-left px-4 py-3">Change</th>
                   <th class="text-left px-4 py-3">Mentions</th>
@@ -209,12 +212,12 @@
               <tbody id="combinedTable"></tbody>
             </table>
           </div>
-          <p class="text-gray-700 text-xs mt-1.5 pl-1">Prices from Yahoo Finance · ~15 min delayed · cached 5 min</p>
+          <p class="text-slate-500 text-xs mt-1.5 pl-1">Prices from Yahoo Finance · delayed market data · cached 5 min</p>
         </div>
       </div>
 
       <!-- Per-account results -->
-      <div>
+      <div id="accountBreakdownSection">
         <h2 class="text-white font-bold mb-3">Per-Account Breakdown</h2>
         <div id="accountResults" class="space-y-4"></div>
       </div>
@@ -224,13 +227,13 @@
     <!-- Recent runs -->
     {% if recent_runs %}
     <div class="mt-10 border-t border-gray-900 pt-6">
-      <p class="text-gray-600 text-xs uppercase tracking-wider mb-3">Recent Runs</p>
+      <p class="text-slate-500 text-xs uppercase tracking-[0.16em] mb-3">Recent Runs</p>
       <div class="space-y-1">
         {% for run in recent_runs %}
         <a href="#" onclick="loadResult('{{ run.filename }}'); return false;"
-          class="flex items-center justify-between text-xs text-gray-500 hover:text-gray-200 py-1.5 border-b border-gray-900 transition-colors group">
-          <span class="group-hover:text-gray-200">{{ run.filename }}</span>
-          <span class="text-gray-700">{{ run.date }}</span>
+          class="flex items-center justify-between text-xs text-slate-400 hover:text-slate-100 py-1.5 border-b border-slate-900 transition-colors group">
+          <span class="group-hover:text-slate-100">{{ run.filename }}</span>
+          <span class="text-slate-600">{{ run.date }}</span>
         </a>
         {% endfor %}
       </div>
@@ -242,58 +245,68 @@
   <script>
     let currentResult = null;
     let currentES = null;
-    let _digestMode = false;   // when true, the next finished scan scrolls to the digest
+    let _digestMode = false;   // when true, the next finished scan shows and scrolls to the digest
     // Preset state: {count, since_date} resolved at scan time
     let _preset = { count: 10, since_date: '' };
+
+    function pad2(value) {
+      return String(value).padStart(2, '0');
+    }
+
+    function formatLocalDate(date) {
+      return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+    }
+
+    function formatLocalDateTime(date) {
+      return `${formatLocalDate(date)}T${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+    }
 
     // ── Preset selector ───────────────────────────────────────────────────────
 
     function applyPreset(name) {
       // Highlight active button
       document.querySelectorAll('.preset-btn').forEach(b => {
-        b.classList.remove('border-blue-500', 'text-blue-300', 'bg-blue-950');
+        b.classList.remove('border-sky-500', 'text-sky-200', 'bg-sky-950/40');
       });
       const btn = document.getElementById('preset-' + name);
-      if (btn) btn.classList.add('border-blue-500', 'text-blue-300', 'bg-blue-950');
+      if (btn) btn.classList.add('border-sky-500', 'text-sky-200', 'bg-sky-950/40');
 
       const customControls = document.getElementById('customControls');
       const label = document.getElementById('presetLabel');
 
       const today = new Date();
-      const fmt = (d) => d.toISOString().slice(0, 10); // YYYY-MM-DD
-      const fmtDT = (d) => d.toISOString().slice(0, 19);  // YYYY-MM-DDTHH:MM:SS
 
       // Per-account post cap scales with the window — a Today scan rarely needs
       // more than a couple dozen posts, while a 30-day pull may go deeper.
       if (name === '1h') {
         const d = new Date(today.getTime() - 60 * 60 * 1000);
-        _preset = { count: 20, since_date: fmtDT(d) };
+        _preset = { count: 20, since_date: formatLocalDateTime(d) };
         customControls.classList.add('hidden');
         label.textContent = `Up to 20 posts · last 1 hour`;
       } else if (name === '4h') {
         const d = new Date(today.getTime() - 4 * 60 * 60 * 1000);
-        _preset = { count: 30, since_date: fmtDT(d) };
+        _preset = { count: 30, since_date: formatLocalDateTime(d) };
         customControls.classList.add('hidden');
         label.textContent = `Up to 30 posts · last 4 hours`;
       } else if (name === 'today') {
-        _preset = { count: 40, since_date: fmt(today) };
+        _preset = { count: 40, since_date: formatLocalDate(today) };
         customControls.classList.add('hidden');
-        label.textContent = `Up to 40 posts · since ${fmt(today)}`;
+        label.textContent = `Up to 40 posts · since ${formatLocalDate(today)}`;
       } else if (name === '3d') {
         const d = new Date(today); d.setDate(d.getDate() - 3);
-        _preset = { count: 70, since_date: fmt(d) };
+        _preset = { count: 70, since_date: formatLocalDate(d) };
         customControls.classList.add('hidden');
-        label.textContent = `Up to 70 posts · since ${fmt(d)}`;
+        label.textContent = `Up to 70 posts · since ${formatLocalDate(d)}`;
       } else if (name === '7d') {
         const d = new Date(today); d.setDate(d.getDate() - 7);
-        _preset = { count: 100, since_date: fmt(d) };
+        _preset = { count: 100, since_date: formatLocalDate(d) };
         customControls.classList.add('hidden');
-        label.textContent = `Up to 100 posts · since ${fmt(d)}`;
+        label.textContent = `Up to 100 posts · since ${formatLocalDate(d)}`;
       } else if (name === '30d') {
         const d = new Date(today); d.setDate(d.getDate() - 30);
-        _preset = { count: 200, since_date: fmt(d) };
+        _preset = { count: 200, since_date: formatLocalDate(d) };
         customControls.classList.add('hidden');
-        label.textContent = `Up to 200 posts · since ${fmt(d)}`;
+        label.textContent = `Up to 200 posts · since ${formatLocalDate(d)}`;
       } else {
         // custom — show the manual controls, clear preset state
         _preset = { count: null, since_date: null }; // will read from inputs
@@ -327,6 +340,7 @@
         count = parseInt(document.getElementById('postCount').value) || 10;
         since_date = document.getElementById('sinceDate').value || '';
       }
+      const client_timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
 
       if (currentES) { currentES.close(); currentES = null; }
 
@@ -346,7 +360,7 @@
         const resp = await fetch('/scrape', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ usernames, count, since_date }),
+          body: JSON.stringify({ usernames, count, since_date, client_timezone }),
         });
         data = await resp.json();
       } catch (e) {
@@ -546,22 +560,22 @@
       const container = document.getElementById('watchlistChips');
       const names = Object.keys(wl);
       if (names.length === 0) {
-        container.innerHTML = '<span class="text-gray-700 text-xs italic">none yet</span>';
+        container.innerHTML = '<span class="text-slate-600 text-xs italic">none yet</span>';
         return;
       }
       container.innerHTML = names.map(name => {
         const accounts = wl[name];
-        return `<span class="inline-flex items-center bg-gray-800 border border-gray-700 rounded-full text-xs">
+        return `<span class="inline-flex items-center bg-slate-950/70 border border-slate-700 rounded-full text-xs">
           <button type="button"
             data-accounts="${escAttr(JSON.stringify(accounts))}"
             onclick="loadWatchlist(JSON.parse(this.dataset.accounts))"
-            class="px-2.5 py-1 text-gray-300 hover:text-white transition-colors rounded-l-full">
-            ${escHtml(name)}<span class="text-gray-600 ml-1">${accounts.length}</span>
+            class="px-2.5 py-1 text-slate-200 hover:text-white transition-colors rounded-l-full">
+            ${escHtml(name)}<span class="text-slate-500 ml-1">${accounts.length}</span>
           </button>
           <button type="button"
             data-name="${escAttr(name)}"
             onclick="deleteWatchlist(this.dataset.name)"
-            class="pr-2 pl-1 py-1 text-gray-700 hover:text-red-400 transition-colors rounded-r-full">×</button>
+            class="pr-2 pl-1 py-1 text-slate-500 hover:text-red-400 transition-colors rounded-r-full">×</button>
         </span>`;
       }).join('');
     }
@@ -644,13 +658,13 @@
     }
 
     function fmtPrice(price, currency) {
-      if (price == null) return '<span class="text-gray-600">—</span>';
+      if (price == null) return '<span class="text-slate-500">—</span>';
       const sym = currency === 'USD' ? '$' : (currency || '$');
-      return `<span class="text-gray-200">${sym}${Number(price).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</span>`;
+      return `<span class="text-slate-100">${sym}${Number(price).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</span>`;
     }
 
     function fmtChange(pct, abs) {
-      if (pct == null) return '<span class="text-gray-600">—</span>';
+      if (pct == null) return '<span class="text-slate-500">—</span>';
       const up = pct >= 0;
       const color = up ? 'text-green-400' : 'text-red-400';
       const arrow = up ? '▲' : '▼';
@@ -663,7 +677,7 @@
       if (!state || state === 'REGULAR' || state === 'UNKNOWN') return '';
       const labels = { PRE:'pre-mkt', POST:'after-hrs', POSTPOST:'after-hrs', PREPRE:'pre-mkt', CLOSED:'closed' };
       const label = labels[state] || state.toLowerCase();
-      return `<span class="ml-1 text-xs text-yellow-600 bg-yellow-900/30 px-1 py-0.5 rounded">${label}</span>`;
+      return `<span class="ml-1 text-xs text-amber-300 bg-amber-950/40 px-1 py-0.5 rounded">${label}</span>`;
     }
 
     function newBadge(isNew) {
@@ -674,25 +688,25 @@
 
     function lowConfBadge(low) {
       return low
-        ? '<span class="ml-1.5 align-middle text-[10px] text-gray-500 border border-gray-700 px-1 py-0.5 rounded" title="One account, no $cashtag, weak signal — de-ranked">low-conf</span>'
+        ? '<span class="ml-1.5 align-middle text-[10px] text-amber-300 border border-amber-800/60 bg-amber-950/30 px-1 py-0.5 rounded" title="One account, no $cashtag, weak signal — de-ranked">low-conf</span>'
         : '';
     }
 
     function sentimentCell(t) {
       const label = t.sentiment_label || 'mixed/neutral';
       const v = t.net_sentiment;
-      const num = v != null ? `<span class="text-gray-600 text-xs ml-1">${v > 0 ? '+' : ''}${v}</span>` : '';
+      const num = v != null ? `<span class="text-slate-500 text-xs ml-1">${v > 0 ? '+' : ''}${v}</span>` : '';
       if (label === 'bullish') return `<span class="text-green-400 font-semibold">▲ bull</span>${num}`;
       if (label === 'bearish') return `<span class="text-red-400 font-semibold">▼ bear</span>${num}`;
-      return '<span class="text-gray-500">• neutral</span>';
+      return '<span class="text-slate-400">• neutral</span>';
     }
 
     function signalCell(score, max) {
-      if (score == null) return '<span class="text-gray-600">—</span>';
+      if (score == null) return '<span class="text-slate-500">—</span>';
       const pct = max > 0 ? Math.max(4, Math.round((score / max) * 100)) : 0;
-      return `<div class="flex items-center gap-1.5" title="Signal score ${Number(score).toFixed(2)} (cashtag + thesis + cross-account weight)">
-        <div class="w-10 h-1.5 bg-gray-800 rounded overflow-hidden"><div class="h-full bg-blue-500" style="width:${pct}%"></div></div>
-        <span class="text-gray-300 text-xs">${Number(score).toFixed(1)}</span>
+      return `<div class="flex items-center gap-2" title="Higher means more corroborated, subject-focused mentions">
+        <div class="w-14 h-1.5 bg-slate-800 rounded overflow-hidden"><div class="h-full bg-sky-400" style="width:${pct}%"></div></div>
+        <span class="text-slate-200 text-xs">${Number(score).toFixed(2)}</span>
       </div>`;
     }
 
@@ -701,7 +715,7 @@
     function sentimentDot(label) {
       if (label === 'bullish') return '<span class="text-green-400">▲</span>';
       if (label === 'bearish') return '<span class="text-red-400">▼</span>';
-      return '<span class="text-gray-600">•</span>';
+      return '<span class="text-slate-500">•</span>';
     }
 
     function digestChip(t, extra) {
@@ -713,10 +727,10 @@
       }
       return `<div class="flex items-center gap-2 px-2.5 py-1.5 bg-gray-800/60 border border-gray-700 rounded-lg">
         ${sentimentDot(t.sentiment_label)}
-        <span class="font-bold text-green-400">$${escHtml(t.ticker)}</span>
+        <span class="font-bold ticker-accent">$${escHtml(t.ticker)}</span>
         ${chg}
         ${extra || ''}
-        <span class="ml-auto text-gray-500 text-xs">${t.total_mentions || 0}×</span>
+        <span class="ml-auto text-slate-500 text-xs">${t.total_mentions || 0}×</span>
       </div>`;
     }
 
@@ -749,40 +763,40 @@
       const section = (title, items, color, renderItem) => {
         if (!items || !items.length) return '';
         return `<div class="mb-3 last:mb-0">
-          <div class="text-xs uppercase tracking-wider ${color} mb-1.5">${title} <span class="text-gray-600">${items.length}</span></div>
+          <div class="text-xs uppercase tracking-[0.16em] ${color} mb-1.5">${title} <span class="text-slate-500">${items.length}</span></div>
           <div class="flex flex-wrap gap-1.5">${items.map(renderItem).join('')}</div>
         </div>`;
       };
 
       const convPct = t => t.conviction_score != null
-        ? `<span class="text-blue-300/70 text-xs">${Math.round(t.conviction_score * 100)}% conv</span>` : '';
+        ? `<span class="text-sky-200/80 text-xs">${Math.round(t.conviction_score * 100)}% conv</span>` : '';
 
       const body = [
         section('🆕 New today', digest.new_today, 'text-emerald-400', t => digestChip(t)),
         section('🚀 Accelerating', digest.accelerating, 'text-orange-400',
           t => digestChip(t, `<span class="text-orange-300 text-xs">${t.today_mentions}↑ vs ${t.prior_avg}/d (${t.accel_factor || ''}×)</span>`)),
         section('🎯 Top conviction', digest.top_conviction, 'text-blue-400',
-          t => digestChip(t, `${convPct(t)}<span class="text-gray-500 text-xs">${t.accounts} acct${t.accounts === 1 ? '' : 's'}</span>`)),
+          t => digestChip(t, `${convPct(t)}<span class="text-slate-500 text-xs">${t.accounts} acct${t.accounts === 1 ? '' : 's'}</span>`)),
         section('▲ Bullish', digest.bullish, 'text-green-400', t => digestChip(t)),
         section('▼ Bearish', digest.bearish, 'text-red-400', t => digestChip(t)),
       ].join('');
 
       const empty = body ? '' :
-        '<div class="text-gray-600 text-xs">No notable signals in this window — try a wider scan window or more accounts.</div>';
+        '<div class="text-slate-500 text-xs">No notable signals in this window — try a wider scan window or more accounts.</div>';
 
       const warning = digestWarning
         ? `<div class="text-yellow-500/70 text-xs mb-2">⚠ ${escHtml(digestWarning)}</div>` : '';
 
       const priceTs = priceFetchTime
-        ? `<div class="text-xs text-gray-600 mt-2 pt-2 border-t border-gray-800">Prices as of ${new Date(priceFetchTime).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>` : '';
+        ? `<div class="text-xs text-slate-500 mt-2 pt-2 border-t border-slate-800">Prices as of ${new Date(priceFetchTime).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>` : '';
 
-      panel.innerHTML = `<div class="bg-gray-900 border border-emerald-900/50 rounded-xl p-5">
-        <div class="flex items-center justify-between mb-3 pb-2 border-b border-gray-800">
+      panel.innerHTML = `<div class="bg-slate-900/95 border border-emerald-900/40 rounded-xl p-5">
+        <div class="flex items-center justify-between mb-3 pb-2 border-b border-slate-800">
           <div class="flex items-center gap-2">
             <span class="text-base font-bold text-white">📋 Daily Digest</span>
-            <span class="text-xs text-gray-500">${escHtml(digest.date || '')}</span>
+            <span class="text-xs text-slate-400">${escHtml(digest.date || '')}</span>
           </div>
-          <span class="text-xs text-gray-500">${(digest.accounts || []).length} account(s) · ${digest.total_tickers || 0} tickers</span>
+          <span class="text-xs text-slate-400">${(digest.accounts || []).length} account(s) · ${digest.total_tickers || 0} tickers</span>
         </div>
         ${warning}${body}${empty}${priceTs}
       </div>`;
@@ -793,6 +807,7 @@
       renderDigest(result, showDigest);
       const combined = result.combined_tickers || [];
       const accounts = result.accounts_analyzed || [];
+      const maxSignal = combined.reduce((acc, item) => Math.max(acc, Number(item.signal_score) || 0), 0);
 
       const settings = result.scan_settings || {};
       let metaParts = [
@@ -803,7 +818,7 @@
       if (settings.since_date) {
         const sd = settings.since_date;
         const label = sd.includes('T')
-          ? `since ${new Date(sd + 'Z').toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`
+          ? `since ${new Date(sd).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})}`
           : `since ${sd}`;
         metaParts.push(label);
       }
@@ -814,54 +829,60 @@
 
       const tbody = document.getElementById('combinedTable');
       if (combined.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6" class="px-4 py-8 text-center text-gray-600">No US stock tickers found</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" class="px-4 py-8 text-center text-slate-500">No US stock tickers found</td></tr>`;
       } else {
         tbody.innerHTML = combined.map((t, i) => {
           const accs = Object.keys(t.sources || {}).map(a => `@${a}`).join(', ');
-          const dim = t.low_confidence ? 'opacity-50' : '';
           const susp = t.price_suspicious
             ? '<span title="Suspicious price move — verify before trusting" class="text-yellow-500 ml-1">⚠</span>' : '';
-          return `<tr class="border-b border-gray-800 hover:bg-gray-800/40 transition-colors ${dim}">
-            <td class="px-4 py-3 text-gray-600">${i + 1}</td>
-            <td class="px-4 py-3 font-bold text-green-400 text-base" title="${escAttr(t.company || '')}">
+          const rowTone = t.low_confidence ? 'bg-amber-950/10' : '';
+          return `<tr class="border-b border-slate-800 hover:bg-slate-800/40 transition-colors ${rowTone}">
+            <td class="px-4 py-3 text-slate-500">${i + 1}</td>
+            <td class="px-4 py-3 font-bold ticker-accent text-base" title="${escAttr(t.company || '')}">
               $${escHtml(t.ticker)}${marketBadge(t.market_state)}${newBadge(t.is_new_today)}${lowConfBadge(t.low_confidence)}
             </td>
+            <td class="px-4 py-3 text-sm">${signalCell(t.signal_score, maxSignal)}</td>
+            <td class="px-4 py-3 text-sm">${sentimentCell(t)}</td>
             <td class="px-4 py-3 text-sm">${fmtPrice(t.price, t.currency)}${susp}</td>
             <td class="px-4 py-3 text-sm">${fmtChange(t.change_pct, t.change_abs)}</td>
             <td class="px-4 py-3 text-white font-semibold">${t.total_mentions}</td>
-            <td class="px-4 py-3 text-gray-500 text-xs">${escHtml(accs)}</td>
+            <td class="px-4 py-3 text-slate-400 text-xs">${escHtml(accs)}</td>
           </tr>`;
         }).join('');
       }
 
+      const accountSection = document.getElementById('accountBreakdownSection');
       const accountDiv = document.getElementById('accountResults');
       accountDiv.innerHTML = '';
+      let visibleAccountCards = 0;
       for (const [username, data] of Object.entries(result.results)) {
         if (data.error) {
+          visibleAccountCards += 1;
           accountDiv.innerHTML += `<div class="bg-gray-900 border border-red-900/60 rounded-xl p-4">
             <div class="font-bold text-red-400 mb-1">@${escHtml(username)}</div>
             <p class="text-gray-500 text-xs">${escHtml(data.error)}</p>
           </div>`;
           continue;
         }
-        // Skip accounts with no tickers — nothing useful to show in the breakdown.
-        if (!data.tickers || !data.tickers.length) continue;
-
+        if (!(data.posts || []).length) {
+          continue;
+        }
+        visibleAccountCards += 1;
         let tickerRows = '';
         if (!data.tickers || data.tickers.length === 0) {
-          tickerRows = `<tr><td colspan="3" class="px-4 py-6 text-center text-gray-600 text-xs">No tickers found</td></tr>`;
+          tickerRows = `<tr><td colspan="3" class="px-4 py-6 text-center text-slate-500 text-xs">No tickers found in this scan window</td></tr>`;
         } else {
           tickerRows = data.tickers.map(t => {
             const snippets = t.occurrences.map(o => {
-              const dateStr = o.posted_at ? `<span class="text-gray-600">${fmtDate(o.posted_at)}</span> · ` : '';
-              return `<div class="border-l-2 border-gray-700 pl-2 mb-1.5 last:mb-0">
-                <span class="text-gray-500 text-xs">Post #${o.post_index} ${dateStr}</span>
-                <span class="text-gray-400 text-xs">"${escHtml(o.snippet)}"</span>
+              const dateStr = o.posted_at ? `<span class="text-slate-500">${fmtDate(o.posted_at)}</span> · ` : '';
+              return `<div class="border-l-2 border-slate-700 pl-2 mb-1.5 last:mb-0">
+                <span class="text-slate-400 text-xs">Post #${o.post_index} ${dateStr}</span>
+                <span class="text-slate-300 text-xs">"${escHtml(o.snippet)}"</span>
               </div>`;
             }).join('');
-            return `<tr class="border-b border-gray-800">
+            return `<tr class="border-b border-slate-800">
               <td class="px-4 py-3 align-top">
-                <div class="font-bold text-green-400 text-base">$${escHtml(t.ticker)}${marketBadge(t.market_state)}</div>
+                <div class="font-bold ticker-accent text-base">$${escHtml(t.ticker)}${marketBadge(t.market_state)}</div>
                 <div class="mt-1">${fmtPrice(t.price, t.currency)}</div>
                 <div class="mt-0.5">${fmtChange(t.change_pct, t.change_abs)}</div>
               </td>
@@ -871,29 +892,29 @@
           }).join('');
         }
 
-        accountDiv.innerHTML += `<div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-800 cursor-pointer select-none" onclick="toggleAccountCard(this)">
+        accountDiv.innerHTML += `<div class="acct-result-card bg-slate-900/95 border border-slate-800 rounded-xl overflow-hidden">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-slate-800 cursor-pointer select-none" onclick="toggleAccountCard(this)">
             <span class="font-bold text-white">@${escHtml(username)}</span>
             <div class="flex items-center gap-2">
-              <span class="text-gray-600 text-xs">${data.posts_analyzed} posts</span>
-              ${data.stopped_by === 'date' ? '<span class="text-xs text-yellow-700 bg-yellow-900/30 px-1.5 py-0.5 rounded" title="No recent original posts found within the date range">stopped: date cutoff</span>' : ''}
-              ${data.stopped_by === 'date' && data.last_post_date ? `<span class="text-xs text-gray-600">last post ${fmtDate(data.last_post_date)}</span>` : ''}
-              ${data.stopped_by === 'count' ? '<span class="text-xs text-blue-700 bg-blue-900/30 px-1.5 py-0.5 rounded">stopped: post limit</span>' : ''}
-              ${data.stopped_by === 'end_of_timeline' ? '<span class="text-xs text-gray-700 bg-gray-800 px-1.5 py-0.5 rounded">reached end</span>' : ''}
-              <span class="acct-chevron text-gray-500 text-xs ml-1">▼</span>
+              <span class="text-slate-400 text-xs">${data.posts_analyzed} posts</span>
+              ${data.stopped_by === 'date' ? '<span class="text-xs text-amber-300 bg-amber-950/30 px-1.5 py-0.5 rounded" title="No recent original posts found within the date range">stopped: date cutoff</span>' : ''}
+              ${data.stopped_by === 'date' && data.last_post_date ? `<span class="text-xs text-slate-500">last post ${fmtDate(data.last_post_date)}</span>` : ''}
+              ${data.stopped_by === 'count' ? '<span class="text-xs text-sky-300 bg-sky-950/30 px-1.5 py-0.5 rounded">stopped: post limit</span>' : ''}
+              ${data.stopped_by === 'end_of_timeline' ? '<span class="text-xs text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">reached end</span>' : ''}
+              <span class="acct-chevron text-slate-500 text-xs ml-1">▼</span>
             </div>
           </div>
           <!-- Collapsible body -->
           <div class="acct-card-body">
           <!-- Sub-tabs -->
-          <div class="flex border-b border-gray-800 text-xs">
-            <button onclick="switchAccountTab(this,'tickers')" class="acct-tab-tickers px-4 py-2 font-semibold border-b-2 border-blue-500 text-white">Tickers</button>
-            <button onclick="switchAccountTab(this,'posts')" class="acct-tab-posts px-4 py-2 text-gray-500 border-b-2 border-transparent hover:text-gray-300">Full Posts (${(data.posts||[]).length})</button>
+          <div class="flex border-b border-slate-800 text-xs">
+            <button onclick="switchAccountTab(this,'tickers')" class="acct-tab-tickers px-4 py-2 font-semibold border-b-2 border-sky-500 text-white">Tickers</button>
+            <button onclick="switchAccountTab(this,'posts')" class="acct-tab-posts px-4 py-2 text-slate-500 border-b-2 border-transparent hover:text-slate-200">Full Posts (${(data.posts||[]).length})</button>
           </div>
           <!-- Tickers pane -->
           <div class="acct-pane-tickers">
             <table class="w-full">
-              <thead><tr class="text-gray-600 text-xs uppercase tracking-wider">
+              <thead><tr class="text-slate-400 text-xs uppercase tracking-[0.16em]">
                 <th class="text-left px-4 py-2.5">Ticker / Price</th>
                 <th class="text-left px-4 py-2.5">Mentions</th>
                 <th class="text-left px-4 py-2.5">Post Snippets</th>
@@ -908,6 +929,7 @@
           </div><!-- /acct-card-body -->
         </div>`;
       }
+      accountSection.classList.toggle('hidden', visibleAccountCards === 0);
 
       switchTab('posts');
       document.getElementById('results').classList.remove('hidden');
@@ -934,9 +956,9 @@
           <div class="space-y-3">
             <div class="flex items-center gap-3 cursor-pointer select-none" onclick="toggleFeedSection(this)">
               <span class="text-white font-bold text-base">@${escHtml(username)}</span>
-              <span class="text-gray-600 text-xs">${posts.length} post${posts.length !== 1 ? 's' : ''}</span>
-              <div class="flex-1 h-px bg-gray-800"></div>
-              <span class="feed-section-chevron text-gray-500 text-xs">▼</span>
+              <span class="text-slate-500 text-xs">${posts.length} post${posts.length !== 1 ? 's' : ''}</span>
+              <div class="flex-1 h-px bg-slate-800"></div>
+              <span class="feed-section-chevron text-slate-500 text-xs">▼</span>
             </div>
             <div class="feed-section-body space-y-3">
               ${cards}
@@ -945,7 +967,7 @@
       }
       document.getElementById('postsCount').textContent = totalPosts ? `(${totalPosts})` : '';
       if (!sections.length) {
-        feed.innerHTML = `<div class="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center text-gray-600 text-sm">No posts in this scan window.</div>`;
+        feed.innerHTML = `<div class="bg-slate-900/95 border border-slate-800 rounded-xl p-8 text-center text-slate-500 text-sm">No posts in this scan window.</div>`;
         return;
       }
       feed.innerHTML = sections.join('');
@@ -954,7 +976,7 @@
     // Bold $CASHTAGS so tickers stay visible inside the full-context post text.
     function highlightCashtags(text) {
       return escHtml(text || '').replace(/(\$[A-Za-z]{1,6})\b/g,
-        '<span class="text-green-400 font-semibold">$1</span>');
+        '<span class="text-emerald-300 font-semibold">$1</span>');
     }
 
     // Shared post card — used by the top-level Posts feed and per-account panes.
@@ -968,17 +990,17 @@
         p.views   != null ? `👁 ${p.views}`   : '',
       ].filter(Boolean).join('  ');
       const link = p.url ? `<a href="${escHtml(p.url)}" target="_blank" rel="noopener" class="text-blue-500 hover:underline">↗ open</a>` : '';
-      const repostBadge = p.is_repost ? '<span class="text-xs text-gray-600 bg-gray-800 px-1.5 py-0.5 rounded">↺ repost</span>' : '';
+      const repostBadge = p.is_repost ? '<span class="text-xs text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">↺ repost</span>' : '';
       const acct = account ? `<span class="font-bold text-white">@${escHtml(account)}</span>` : '';
-      return `<div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <div class="flex items-center gap-2 mb-2 text-xs text-gray-500 flex-wrap">
+      return `<div class="bg-slate-900/95 border border-slate-800 rounded-xl p-4">
+        <div class="flex items-center gap-2 mb-2 text-xs text-slate-400 flex-wrap">
           ${acct}
           ${repostBadge}
           ${dateStr ? `<span>${dateStr}</span>` : ''}
           ${link}
-          ${eng ? `<span class="ml-auto text-gray-600 shrink-0">${eng}</span>` : ''}
+          ${eng ? `<span class="ml-auto text-slate-500 shrink-0">${eng}</span>` : ''}
         </div>
-        <p class="text-gray-100 text-sm whitespace-pre-wrap leading-relaxed break-words">${highlightCashtags(p.text)}</p>
+        <p class="text-slate-100 text-[17px] whitespace-pre-wrap leading-8 break-words">${highlightCashtags(p.text)}</p>
       </div>`;
     }
 
@@ -991,7 +1013,7 @@
     }
 
     function toggleAccountCard(header) {
-      const card = header.closest('.bg-gray-900');
+      const card = header.closest('.acct-result-card');
       const body = card.querySelector('.acct-card-body');
       const chev = header.querySelector('.acct-chevron');
       const collapsed = body.classList.toggle('hidden');
@@ -1000,11 +1022,11 @@
 
     function switchAccountTab(btn, tab) {
       event.stopPropagation();
-      const card = btn.closest('.bg-gray-900');
+      const card = btn.closest('.acct-result-card');
       // Update tab button styles
-      card.querySelector('.acct-tab-tickers').className = 'acct-tab-tickers px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-300';
-      card.querySelector('.acct-tab-posts').className   = 'acct-tab-posts px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-300';
-      btn.className = btn.className.replace('border-transparent text-gray-500 hover:text-gray-300', 'border-blue-500 text-white font-semibold');
+      card.querySelector('.acct-tab-tickers').className = 'acct-tab-tickers px-4 py-2 border-b-2 border-transparent text-slate-500 hover:text-slate-200';
+      card.querySelector('.acct-tab-posts').className   = 'acct-tab-posts px-4 py-2 border-b-2 border-transparent text-slate-500 hover:text-slate-200';
+      btn.className = btn.className.replace('border-transparent text-slate-500 hover:text-slate-200', 'border-sky-500 text-white font-semibold');
       // Show/hide panes
       card.querySelector('.acct-pane-tickers').classList.toggle('hidden', tab !== 'tickers');
       card.querySelector('.acct-pane-posts').classList.toggle('hidden',   tab !== 'posts');
@@ -1084,9 +1106,6 @@
     // ── Init ──────────────────────────────────────────────────────────────────
     loadWatchlists();
     checkXSession();
-    {% if recent_runs %}
-    loadResult('{{ recent_runs[0].filename }}');
-    {% endif %}
   </script>
 </body>
 </html>

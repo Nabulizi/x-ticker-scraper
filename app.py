@@ -8,6 +8,8 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory, stream_with_context
@@ -72,6 +74,32 @@ def _save_watchlists(data: dict) -> None:
     _write_json_atomic(WATCHLISTS_FILE, data)
 
 
+def _client_timezone(tz_name: Optional[str]):
+    if not tz_name:
+        return timezone.utc
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return timezone.utc
+
+
+def _local_today_str(tz_name: Optional[str]) -> str:
+    return datetime.now(_client_timezone(tz_name)).strftime("%Y-%m-%d")
+
+
+def _parse_since_date(since_raw: str, client_tz_name: Optional[str]):
+    raw = (since_raw or "").strip()
+    if not raw:
+        return None
+
+    parsed = datetime.fromisoformat(raw)
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc)
+
+    client_tz = _client_timezone(client_tz_name)
+    return parsed.replace(tzinfo=client_tz).astimezone(timezone.utc)
+
+
 def build_digest(run: dict) -> dict:
     """
     Distill a finished run into a daily 'signal' summary. Cheap to compute and
@@ -83,7 +111,9 @@ def build_digest(run: dict) -> dict:
     DB-dependent sections degrade gracefully to empty if store is unavailable.
     """
     combined = run.get("combined_tickers", [])
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    scan_settings = run.get("scan_settings") or {}
+    client_tz_name = scan_settings.get("client_timezone")
+    today = _local_today_str(client_tz_name)
 
     def slim(t: dict) -> dict:
         return {
@@ -118,8 +148,13 @@ def build_digest(run: dict) -> dict:
     if store is not None and combined:
         syms = [t["ticker"] for t in combined]
         try:
-            first_seen = store.ticker_first_seen(syms)
-            daily = store.ticker_daily_counts(syms, days=5)
+            first_seen = store.ticker_first_seen(syms, tz_name=client_tz_name)
+            daily = store.ticker_daily_counts(
+                syms,
+                days=5,
+                tz_name=client_tz_name,
+                today=today,
+            )
         except Exception:
             first_seen, daily = {}, {}
 
@@ -218,10 +253,11 @@ def scrape():
 
     # Optional since_date — ISO date string "YYYY-MM-DD" or datetime "YYYY-MM-DDTHH:MM:SS"
     since_date = None
+    client_timezone = str(body.get("client_timezone", "")).strip()[:64]
     since_raw = body.get("since_date", "").strip()
     if since_raw:
         try:
-            since_date = datetime.fromisoformat(since_raw).replace(tzinfo=timezone.utc)
+            since_date = _parse_since_date(since_raw, client_timezone)
         except ValueError:
             return jsonify({"error": f"Invalid since_date '{since_raw}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS."}), 400
 
@@ -252,6 +288,7 @@ def scrape():
             "scan_settings": {
                 "max_posts": count,
                 "since_date": since_raw or None,
+                "client_timezone": client_timezone or None,
             },
             "results": {},
             "combined_tickers": [],
