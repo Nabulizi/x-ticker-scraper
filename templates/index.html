@@ -38,10 +38,30 @@
           title="Click to enable/disable auto-scan"
           class="hidden text-xs px-2 py-1 rounded border transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500/50"></button>
         <span id="xStatusBadge" class="text-xs px-2 py-1 rounded border hidden"></span>
+        <button type="button" onclick="toggleScorecard()"
+          class="text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-3 py-1 rounded transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500/50">
+          Account Scorecard
+        </button>
         <button id="connectXBtn" onclick="connectX()"
           class="hidden text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-3 py-1 rounded transition-colors">
           Connect X Account
         </button>
+      </div>
+    </div>
+
+    <!-- Account Scorecard panel -->
+    <div id="scorecardPanel" class="hidden bg-slate-900/95 border border-slate-800 rounded-xl p-5 mb-6">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <h2 class="text-white font-bold text-sm">Account Scorecard</h2>
+          <p class="text-slate-500 text-xs mt-0.5">Accounts ranked by average forward return on their ticker calls (5-day). Requires scan history.</p>
+        </div>
+        <button type="button" onclick="toggleScorecard()" aria-label="Close scorecard" class="text-slate-500 hover:text-slate-200 transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div id="scorecardBody">
+        <p class="text-slate-500 text-xs">Loading…</p>
       </div>
     </div>
 
@@ -226,6 +246,7 @@
                   <th scope="col" data-sort-col="change_pct" onclick="sortTable('change_pct')" class="text-left px-4 py-3">Change<span class="sort-ind ml-1"></span></th>
                   <th scope="col" data-sort-col="total_mentions" onclick="sortTable('total_mentions')" class="text-left px-4 py-3">Mentions<span class="sort-ind ml-1"></span></th>
                   <th scope="col" data-sort-col="accounts" onclick="sortTable('accounts')" class="text-left px-4 py-3">Accounts<span class="sort-ind ml-1"></span></th>
+                  <th scope="col" class="text-left px-4 py-3">7d Trend</th>
                 </tr>
               </thead>
               <tbody id="combinedTable"></tbody>
@@ -798,11 +819,27 @@
       });
     }
 
-    function renderCombinedTable(combined, maxSignal) {
+    function sparkline(data, width = 52, height = 16) {
+      if (!data || data.length < 2) return '<span class="text-slate-700 text-xs">—</span>';
+      const vals = data.map(d => d.mentions);
+      const max = Math.max(...vals, 1);
+      const pts = vals.map((v, i) => {
+        const x = (i / (vals.length - 1)) * width;
+        const y = height - (v / max) * (height - 2) - 1;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(' ');
+      const lastUp = vals.length >= 2 && vals[vals.length - 1] >= vals[vals.length - 2];
+      const color = lastUp ? '#34d399' : '#94a3b8';
+      return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" class="inline align-middle">
+        <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>`;
+    }
+
+    function renderCombinedTable(combined, maxSignal, velocityMap = {}) {
       const sorted = getSortedTickers(combined);
       const tbody = document.getElementById('combinedTable');
       if (sorted.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="px-4 py-8 text-center text-slate-500">No US stock tickers found</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9" class="px-4 py-8 text-center text-slate-500">No US stock tickers found</td></tr>`;
         return;
       }
       tbody.innerHTML = sorted.map((t, i) => {
@@ -810,6 +847,7 @@
         const susp = t.price_suspicious
           ? `<span title="Suspicious price move — verify before trusting" class="text-yellow-500 ml-1">${SVG.warn}</span>` : '';
         const rowTone = t.low_confidence ? 'bg-amber-950/10' : '';
+        const trend = sparkline(velocityMap[t.ticker]);
         return `<tr class="border-b border-slate-800 hover:bg-slate-800/40 transition-colors ${rowTone}">
           <td class="px-4 py-3 text-slate-500">${i + 1}</td>
           <td class="px-4 py-3 font-bold ticker-accent text-base" title="${escAttr(t.company || '')}">
@@ -821,9 +859,21 @@
           <td class="px-4 py-3 text-sm">${fmtChange(t.change_pct, t.change_abs)}</td>
           <td class="px-4 py-3 text-white font-semibold">${t.total_mentions}</td>
           <td class="px-4 py-3 text-slate-400 text-xs">${escHtml(accs)}</td>
+          <td class="px-4 py-3" data-sparkline="${escAttr(t.ticker)}">${trend}</td>
         </tr>`;
       }).join('');
       updateSortHeaders();
+    }
+
+    async function fetchAndRenderSparklines(combined, maxSignal) {
+      if (!combined.length) return;
+      const symbols = combined.map(t => t.ticker).join(',');
+      try {
+        const resp = await fetch(`/velocity/batch?tickers=${encodeURIComponent(symbols)}&days=7`);
+        if (!resp.ok) return;
+        const velocityMap = await resp.json();
+        renderCombinedTable(combined, maxSignal, velocityMap);
+      } catch (e) { /* velocity data is optional */ }
     }
 
     // ── Daily digest ──────────────────────────────────────────────────────────
@@ -944,6 +994,7 @@
       renderPostsFeed(result);
 
       renderCombinedTable(combined, maxSignal);
+      fetchAndRenderSparklines(combined, maxSignal);
 
       const accountSection = document.getElementById('accountBreakdownSection');
       const accountDiv = document.getElementById('accountResults');
@@ -1195,6 +1246,65 @@
       return String(str || '')
         .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // ── Account scorecard ─────────────────────────────────────────────────────
+
+    async function toggleScorecard() {
+      const panel = document.getElementById('scorecardPanel');
+      const isHidden = panel.classList.contains('hidden');
+      panel.classList.toggle('hidden');
+      if (isHidden) await loadScorecard();
+    }
+
+    async function loadScorecard() {
+      const body = document.getElementById('scorecardBody');
+      body.innerHTML = '<p class="text-slate-500 text-xs">Loading…</p>';
+      try {
+        const resp = await fetch('/scorecard?min_calls=3');
+        if (!resp.ok) {
+          const d = await resp.json();
+          body.innerHTML = `<p class="text-slate-500 text-xs">${escHtml(d.error || 'Unavailable')}</p>`;
+          return;
+        }
+        const rows = await resp.json();
+        if (!rows.length) {
+          body.innerHTML = '<p class="text-slate-500 text-xs">No data yet — forward returns are backfilled nightly after scans accumulate a few days of history.</p>';
+          return;
+        }
+        const fmt = v => v != null ? `${v > 0 ? '+' : ''}${v}%` : '—';
+        const winColor = w => w == null ? 'text-slate-500' : w >= 55 ? 'text-emerald-400' : w >= 45 ? 'text-slate-300' : 'text-red-400';
+        const retColor = v => v == null ? 'text-slate-500' : v > 0 ? 'text-emerald-400' : v < 0 ? 'text-red-400' : 'text-slate-300';
+        body.innerHTML = `
+          <div class="overflow-x-auto">
+            <table class="w-full text-xs">
+              <thead>
+                <tr class="text-slate-500 uppercase tracking-[0.14em] border-b border-slate-800">
+                  <th scope="col" class="text-left py-2 pr-4">Account</th>
+                  <th scope="col" class="text-right py-2 pr-4">Calls</th>
+                  <th scope="col" class="text-right py-2 pr-4">Avg 1d</th>
+                  <th scope="col" class="text-right py-2 pr-4">Avg 5d</th>
+                  <th scope="col" class="text-right py-2 pr-4">Avg 20d</th>
+                  <th scope="col" class="text-right py-2">Win % (5d)</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows.map(r => `
+                  <tr class="border-b border-slate-800/60 hover:bg-slate-800/30">
+                    <td class="py-2 pr-4 font-semibold text-slate-200">@${escHtml(r.account)}</td>
+                    <td class="py-2 pr-4 text-right text-slate-400">${r.calls}</td>
+                    <td class="py-2 pr-4 text-right ${retColor(r.avg_ret_1d)}">${fmt(r.avg_ret_1d)}</td>
+                    <td class="py-2 pr-4 text-right ${retColor(r.avg_ret_5d)} font-semibold">${fmt(r.avg_ret_5d)}</td>
+                    <td class="py-2 pr-4 text-right ${retColor(r.avg_ret_20d)}">${fmt(r.avg_ret_20d)}</td>
+                    <td class="py-2 text-right ${winColor(r.win_rate_5d)}">${r.win_rate_5d != null ? r.win_rate_5d + '%' : '—'}</td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+          <p class="text-slate-600 text-xs mt-2">Ranked by avg 5d return · min 3 calls · updated nightly at 2 AM ET</p>`;
+      } catch (e) {
+        body.innerHTML = `<p class="text-slate-500 text-xs">Could not load scorecard: ${escHtml(e.message)}</p>`;
+      }
     }
 
     // ── Auto-scan status ──────────────────────────────────────────────────────

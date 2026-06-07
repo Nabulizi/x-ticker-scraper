@@ -4,8 +4,15 @@ scheduler.py — background auto-scan scheduler with macOS notifications.
 Scans all saved watchlist accounts automatically:
   - Every 60 min during NYSE market hours  (Mon–Fri 09:30–16:00 ET)
   - Every 6 hours outside market hours
+  - Uses a rolling 24-hour window (not since-midnight) to avoid missing
+    posts when scans happen near midnight or across timezones
   - Sends a native macOS notification when any ticker is mentioned by 2+
     distinct accounts
+  - Sends a separate notification when the X session expires so you can
+    reconnect before the next market open
+
+Also runs a nightly forward-returns backfill (store.update_forward_returns)
+at 2 AM ET to keep the account scorecard up to date.
 
 Import-safe: app.py wraps the import in try/except so any failure here
 never prevents the Flask server from starting.
@@ -15,7 +22,7 @@ import json
 import subprocess
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -31,10 +38,11 @@ WATCHLISTS_FILE = Path(__file__).parent / "data" / "watchlists.json"
 
 _state: dict = {
     "enabled": True,
-    "last_scan_at": None,   # unix timestamp
-    "next_scan_at": None,   # unix timestamp
-    "last_tickers": [],     # [{ticker, accounts, total_mentions}]
+    "last_scan_at": None,       # unix timestamp
+    "next_scan_at": None,       # unix timestamp
+    "last_tickers": [],         # [{ticker, accounts, total_mentions}]
     "last_error": None,
+    "last_returns_update": None,  # unix timestamp of last forward-return backfill
 }
 _lock = threading.Lock()
 
@@ -77,8 +85,21 @@ def _load_watchlist_accounts() -> list:
         return []
 
 
+def _osascript(title: str, body: str, sound: str = "Ping") -> None:
+    """Fire a native macOS notification. Best-effort — never raises."""
+    try:
+        subprocess.run(
+            ["osascript", "-e",
+             f'display notification "{body}" with title "{title}" sound name "{sound}"'],
+            timeout=5,
+            capture_output=True,
+        )
+    except Exception:
+        pass
+
+
 def _notify(tickers: list) -> None:
-    """Send a native macOS notification listing the qualified tickers."""
+    """Send a notification listing tickers mentioned by 2+ accounts."""
     if not tickers:
         return
     parts = [f"${t['ticker']} ({t['accounts']} accts)" for t in tickers[:4]]
@@ -86,15 +107,16 @@ def _notify(tickers: list) -> None:
     if len(tickers) > 4:
         body += f" +{len(tickers) - 4} more"
     title = f"X Monitor · {len(tickers)} signal{'s' if len(tickers) != 1 else ''}"
-    try:
-        subprocess.run(
-            ["osascript", "-e",
-             f'display notification "{body}" with title "{title}" sound name "Ping"'],
-            timeout=5,
-            capture_output=True,
-        )
-    except Exception:
-        pass  # notifications are best-effort; never crash the scheduler
+    _osascript(title, body)
+
+
+def _notify_session_expired() -> None:
+    """Alert the user that the X session expired during an auto-scan."""
+    _osascript(
+        "X Monitor · Session expired",
+        "Open the dashboard and reconnect your X account before market open.",
+        sound="Basso",
+    )
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -125,9 +147,9 @@ def _run_scan() -> list:
     if not accounts:
         return []
 
-    since = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    # Rolling 24-hour window avoids missing posts near midnight or when
+    # the user is in a timezone ahead of UTC.
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
 
     scraped = asyncio.run(
         scrape_accounts(accounts, count=40, since_date=since, progress=None)
@@ -159,6 +181,33 @@ def _run_scan() -> list:
     return qualified
 
 
+# ── Nightly forward-return backfill ──────────────────────────────────────────
+
+def _should_run_returns_update() -> bool:
+    """True once per calendar day, at or after 2 AM ET."""
+    now = datetime.now(ET)
+    if now.hour < 2:
+        return False
+    with _lock:
+        last_ts = _state["last_returns_update"]
+    if last_ts is None:
+        return True
+    last_date = datetime.fromtimestamp(last_ts, ET).date()
+    return last_date < now.date()
+
+
+def _run_returns_update() -> None:
+    try:
+        import store  # optional — may not be available
+        if store is None:
+            return
+        store.update_forward_returns()
+        with _lock:
+            _state["last_returns_update"] = time.time()
+    except Exception:
+        pass  # backfill is best-effort; never crash the scheduler
+
+
 # ── Background loop ───────────────────────────────────────────────────────────
 
 def _loop() -> None:
@@ -180,13 +229,22 @@ def _loop() -> None:
             _state["last_error"] = None
 
         try:
+            from scraper import SessionExpired, InteractiveLoginRequired
             tickers = _run_scan()
             with _lock:
                 _state["last_tickers"] = tickers
             _notify(tickers)
+        except (SessionExpired, InteractiveLoginRequired):
+            _notify_session_expired()
+            with _lock:
+                _state["last_error"] = "X session expired — open the dashboard to reconnect"
         except Exception as exc:
             with _lock:
                 _state["last_error"] = str(exc)
+
+        # Nightly returns backfill — runs at most once per day at 2 AM ET
+        if _should_run_returns_update():
+            _run_returns_update()
 
 
 def start() -> None:

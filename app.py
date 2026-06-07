@@ -579,6 +579,29 @@ def velocity(ticker):
     })
 
 
+@app.route("/velocity/batch")
+def velocity_batch():
+    if store is None:
+        return jsonify({"error": "persistence not available"}), 503
+    raw = request.args.get("tickers", "")
+    tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
+    tickers = [t for t in tickers if re.match(r'^[A-Z]{1,5}$', t)][:50]
+    if not tickers:
+        return jsonify({})
+    try:
+        days = max(1, min(int(request.args.get("days", 7)), 30))
+    except (TypeError, ValueError):
+        days = 7
+    return jsonify({t: store.mention_velocity(t, days) for t in tickers})
+
+
+@app.route("/scorecard")
+def scorecard():
+    if store is None:
+        return jsonify({"error": "persistence not available"}), 503
+    return jsonify(store.account_scorecard(min_calls=_min_calls_arg(default=3)))
+
+
 def _min_calls_arg(default=2):
     try:
         return max(1, min(int(request.args.get("min_calls", default)), 100))
