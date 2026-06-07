@@ -201,3 +201,48 @@ without re-fetching data.
   disruption.
 - **Watchlist name input:** `event.preventDefault()` added to the Enter
   handler so the outer scan form is not inadvertently submitted.
+
+---
+
+# Scraper reliability & performance (2026-06-07)
+
+## 16. `scraper.py` — retry on transient timeline load failures
+
+**Problem:** a single `PWTimeout` immediately raised a user-facing error, even
+when X had just returned a blank or loading page due to a momentary render
+hiccup rather than a real account issue.
+
+**Fix:** `_fetch_posts` now attempts one automatic page reload before raising,
+but only when the body does not contain a clear permanent-failure signal
+(`doesn't exist`, `account suspended`, `protected`). This eliminates most
+false-positive "Could not load timeline" errors from transient X render
+failures.
+
+Also extracted `_timeline_load_error()` to produce richer, cause-specific
+messages:
+
+| Body signal | Error shown to user |
+|---|---|
+| doesn't exist / account suspended | Account not found or suspended |
+| protected | Account has protected tweets |
+| rate limit / try again later | X temporarily rate-limited the timeline |
+| something went wrong / reload | X temporarily failed to render the timeline |
+| log in / sign in | Session is no longer fully authenticated |
+
+## 17. `market_data.py` — profile fetches opt-in via `include_profiles`
+
+**Problem:** every `get_market_data()` call fetched yfinance `.info` profiles
+(sector, industry, company name) for any ticker not in the 30-day cache. Since
+sector enrichment is no longer shown in the dashboard, this was burning Yahoo
+rate-limit quota on every scan for no user-visible benefit.
+
+**Fix:** profile lookups are now gated behind `include_profiles=True` (default
+`False`). Regular price-only scans skip `.info` entirely, keeping them fast and
+reducing rate-limit exposure. The `need_profile` list, `_run_profiles()` call,
+and profile cache write are all skipped unless the flag is set.
+
+## 18. `sector_lookup.py` — pass `include_profiles=True`
+
+Updated the one call site that genuinely needs full profiles (the dedicated
+`lookup_sectors()` function) to pass `include_profiles=True`, preserving
+existing behaviour for any caller that uses sector data explicitly.
