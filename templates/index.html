@@ -32,8 +32,11 @@
         <h1 class="text-xl font-bold tracking-tight text-white">X Stock Ticker Monitor</h1>
         <p class="text-slate-400 text-sm mt-1">Scan X accounts, read the full posts, and surface the tickers that actually deserve attention.</p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
         <span class="text-xs text-slate-400 bg-slate-900 border border-slate-800 px-2 py-1 rounded">US stocks only</span>
+        <button id="autoScanBadge" type="button" onclick="toggleAutoScan()"
+          title="Click to enable/disable auto-scan"
+          class="hidden text-xs px-2 py-1 rounded border transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500/50"></button>
         <span id="xStatusBadge" class="text-xs px-2 py-1 rounded border hidden"></span>
         <button id="connectXBtn" onclick="connectX()"
           class="hidden text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-3 py-1 rounded transition-colors">
@@ -1193,6 +1196,58 @@
         .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
+
+    // ── Auto-scan status ──────────────────────────────────────────────────────
+
+    function fmtCountdown(seconds) {
+      if (seconds < 60) return `${seconds}s`;
+      if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+      const h = Math.floor(seconds / 3600);
+      const m = Math.round((seconds % 3600) / 60);
+      return m > 0 ? `${h}h ${m}m` : `${h}h`;
+    }
+
+    async function refreshAutoScanStatus() {
+      try {
+        const resp = await fetch('/auto-scan/status');
+        const d = await resp.json();
+        const badge = document.getElementById('autoScanBadge');
+        if (!d.available) return;
+        badge.classList.remove('hidden');
+        const countdown = fmtCountdown(d.seconds_until_next);
+        if (d.enabled) {
+          const mh = d.market_hours;
+          badge.textContent = `● Auto · ${countdown}`;
+          badge.className = `text-xs px-2 py-1 rounded border transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500/50 cursor-pointer ${
+            mh ? 'border-emerald-800 bg-emerald-950/40 text-emerald-400'
+               : 'border-slate-700 bg-slate-900 text-slate-400'
+          }`;
+          badge.title = `Auto-scan enabled · next in ${countdown}${mh ? ' (market hours)' : ' (off-hours)'}. Click to disable.`;
+        } else {
+          badge.textContent = '○ Auto · off';
+          badge.className = 'text-xs px-2 py-1 rounded border border-slate-700 bg-slate-900 text-slate-500 transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500/50 cursor-pointer';
+          badge.title = 'Auto-scan disabled. Click to enable.';
+        }
+      } catch (e) { /* ignore — server may be starting */ }
+    }
+
+    async function toggleAutoScan() {
+      try {
+        const resp = await fetch('/auto-scan/status');
+        const d = await resp.json();
+        if (!d.available) return;
+        await fetch('/auto-scan/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: !d.enabled }),
+        });
+        refreshAutoScanStatus();
+      } catch (e) { /* ignore */ }
+    }
+
+    // Poll every 30 s so the countdown stays fresh
+    refreshAutoScanStatus();
+    setInterval(refreshAutoScanStatus, 30000);
 
     // ── Init ──────────────────────────────────────────────────────────────────
     loadWatchlists();

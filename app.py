@@ -5,6 +5,7 @@ import queue
 import re
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,11 @@ try:
     import store  # optional SQLite persistence (time series + scorecard)
 except Exception:  # pragma: no cover
     store = None
+
+try:
+    import scheduler  # optional background auto-scan + macOS notifications
+except Exception:  # pragma: no cover
+    scheduler = None
 
 load_dotenv()
 
@@ -528,6 +534,33 @@ def delete_watchlist(name):
     return jsonify({"ok": True})
 
 
+@app.route("/auto-scan/status")
+def auto_scan_status():
+    if scheduler is None:
+        return jsonify({"available": False})
+    s = scheduler.get_status()
+    now = time.time()
+    return jsonify({
+        "available": True,
+        "enabled": s["enabled"],
+        "last_scan_at": s["last_scan_at"],
+        "next_scan_at": s["next_scan_at"],
+        "seconds_until_next": max(0, int((s["next_scan_at"] or now) - now)),
+        "last_tickers": s["last_tickers"],
+        "last_error": s["last_error"],
+        "market_hours": scheduler.is_market_hours(),
+    })
+
+
+@app.route("/auto-scan/toggle", methods=["POST"])
+def auto_scan_toggle():
+    if scheduler is None:
+        return jsonify({"error": "scheduler not available"}), 503
+    body = request.get_json(force=True)
+    scheduler.set_enabled(bool(body.get("enabled", True)))
+    return jsonify({"enabled": scheduler.get_status()["enabled"]})
+
+
 @app.route("/velocity/<ticker>")
 def velocity(ticker):
     if store is None:
@@ -571,5 +604,7 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     print("[→] Loading US ticker database...")
     get_tickers_db()
+    if scheduler is not None:
+        scheduler.start()
     print(f"[✓] Ready — open http://localhost:{port}")
     app.run(debug=False, port=port)
