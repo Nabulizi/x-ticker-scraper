@@ -300,3 +300,21 @@ glance and lets you toggle it without opening any settings panel:
 
 The badge polls `/auto-scan/status` every 30 seconds so the countdown stays
 accurate. Clicking it toggles the scheduler on or off immediately.
+
+## 22. `scheduler.py` + `app.py` + `templates/index.html` — market session badge
+
+**Problem:** the original badge showed only a countdown (`Auto · 5h 59m`),
+giving no indication of *why* the interval was long — was it off-hours, a
+weekend, or disabled?
+
+**Fix:** added `market_session()` to `scheduler.py` returning one of four
+labels based on the current ET time, exposed via `/auto-scan/status`, and
+updated the badge to display both the label and a colour:
+
+| Session | Badge text | Colour |
+|---|---|---|
+| NYSE open (09:30–16:00 ET, weekday) | `● Market open · next 47m` | Green |
+| Before open (weekday < 09:30 ET) | `● Pre-market · next 23m` | Amber |
+| After close (weekday ≥ 16:00 ET) | `● After hours · next 5h` | Amber |
+| Saturday or Sunday | `● Weekend · next 5h 59m` | Gray |
+| Scheduler disabled | `○ Auto-scan off` | Dim |
