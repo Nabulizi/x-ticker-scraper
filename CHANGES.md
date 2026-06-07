@@ -88,3 +88,46 @@ else content hash). Enables:
 The trailing-tag discount is a heuristic; a spam cashtag sharing a post with an
 unrelated price (e.g. `"$MU down $100 ... $TSLA"`) can still get partial credit.
 The distinct-account ranking is the primary defense against single-account spam.
+
+---
+
+# Bug fixes & hardening (2026-06-07)
+
+## 6. `store.py` — missing `import time` (crash fix)
+
+**Bug:** `update_forward_returns()` called `time.sleep()` but `time` was never
+imported. Any attempt to backfill forward returns raised `NameError: name 'time'
+is not defined` at runtime.
+
+**Fix:** added `import time` to the module-level imports. Also removed a
+redundant `from datetime import timedelta` that was re-imported locally inside
+`update_forward_returns` — `timedelta` was already imported at the top of the
+file.
+
+## 7. `app.py` — input validation on `/velocity/<ticker>`
+
+**Issue:** the ticker value from the URL was passed directly to the store
+without any format check. An arbitrarily long or malformed string would hit the
+DB with no guard.
+
+**Fix:** added a `re.match(r'^[A-Z]{1,5}$', ticker.upper())` check that returns
+400 before touching the DB. Consistent with the 1–5 character constraint on all
+valid US equity symbols.
+
+## 8. `signals.py` — deeper negation look-back
+
+**Issue:** negation detection only checked the immediately preceding token, so
+`"not going to rally"` still scored bullish (negation separated by one word).
+
+**Fix:** now checks the two preceding tokens (`prev` and `prev2`). Catches
+common patterns like `"not going to rally"`, `"never been bullish"`, and
+`"no reason to buy"`.
+
+## 9. `README.md` — removed stale sector references
+
+Sector enrichment (`.info` lookups + `by_sector` grouping) was dropped in a
+prior pass (see §3 above) but the README still described it. Removed:
+- "Enriches results with … sector/industry info"
+- "Groups tickers by sector"
+- `sector_cache.json` row from the Caching table
+- "sector" from the Usage step 5 and output file description
