@@ -45,6 +45,7 @@ _tickers_db_lock = threading.Lock()
 _scans: dict = {}
 _scans_lock = threading.Lock()
 MAX_SCANS = 20
+MAX_ACTIVE_SCANS = 1
 SCAN_TTL = 300  # evict finished scans after 5 minutes
 
 
@@ -56,17 +57,36 @@ def get_tickers_db() -> set:
         return _tickers_db
 
 
-def _register_scan(scan_id: str, q: queue.Queue) -> None:
+def _prune_scans_locked() -> None:
+    now = time.time()
+    for sid in list(_scans.keys()):
+        if now - _scans[sid]["ts"] > SCAN_TTL:
+            del _scans[sid]
+    while len(_scans) > MAX_SCANS:
+        oldest = next(iter(_scans))
+        del _scans[oldest]
+
+
+def _register_scan(scan_id: str, q: queue.Queue) -> bool:
     with _scans_lock:
+        _prune_scans_locked()
+        active = sum(1 for scan in _scans.values() if scan.get("final") is None)
+        if active >= MAX_ACTIVE_SCANS:
+            return False
         _scans[scan_id] = {"queue": q, "final": None, "ts": time.time()}
-        # Evict by age first, then by count
-        now = time.time()
-        for sid in list(_scans.keys()):
-            if now - _scans[sid]["ts"] > SCAN_TTL:
-                del _scans[sid]
-        while len(_scans) > MAX_SCANS:
-            oldest = next(iter(_scans))
-            del _scans[oldest]
+        _prune_scans_locked()
+        return True
+
+
+def _complete_scan(scan_id: str, msg: dict) -> None:
+    with _scans_lock:
+        scan = _scans.get(scan_id)
+        if not scan:
+            return
+        scan["final"] = msg
+        scan["ts"] = time.time()
+        q = scan["queue"]
+    q.put(msg)
 
 
 def _load_watchlists() -> dict:
@@ -106,7 +126,8 @@ def _parse_since_date(since_raw: str, client_tz_name: Optional[str]):
     if len(raw) > 32 or not re.match(r'^[\d\-T:+Z.]+$', raw):
         raise ValueError("Invalid date format")
 
-    parsed = datetime.fromisoformat(raw)
+    parse_raw = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    parsed = datetime.fromisoformat(parse_raw)
     if parsed.tzinfo is not None:
         return parsed.astimezone(timezone.utc)
 
@@ -242,7 +263,7 @@ def connect_x():
 
 @app.route("/scrape", methods=["POST"])
 def scrape():
-    body = request.get_json(force=True)
+    body = request.get_json(force=True) or {}
 
     # Validate usernames — alphanumeric + underscore only, 1–50 chars
     raw_input = body.get("usernames", "")
@@ -272,7 +293,7 @@ def scrape():
     # Optional since_date — ISO date string "YYYY-MM-DD" or datetime "YYYY-MM-DDTHH:MM:SS"
     since_date = None
     client_timezone = str(body.get("client_timezone", "")).strip()[:64]
-    since_raw = body.get("since_date", "").strip()
+    since_raw = str(body.get("since_date", "") or "").strip()
     if since_raw:
         try:
             since_date = _parse_since_date(since_raw, client_timezone)
@@ -281,7 +302,10 @@ def scrape():
 
     scan_id = str(uuid.uuid4())
     q: queue.Queue = queue.Queue(maxsize=200)
-    _register_scan(scan_id, q)
+    if not _register_scan(scan_id, q):
+        return jsonify({
+            "error": "A scan is already running. Wait for it to finish before starting another."
+        }), 429
 
     def run_scan():
         def emit(msg: dict) -> None:
@@ -295,10 +319,10 @@ def scrape():
                 scrape_accounts(valid_usernames, count=count, since_date=since_date, progress=emit)
             )
         except (InteractiveLoginRequired, SessionExpired) as exc:
-            q.put({"type": "session_expired", "message": str(exc)})
+            _complete_scan(scan_id, {"type": "session_expired", "message": str(exc)})
             return
         except Exception as exc:
-            q.put({"type": "error", "message": str(exc)})
+            _complete_scan(scan_id, {"type": "error", "message": str(exc)})
             return
 
         valid_tickers = get_tickers_db()
@@ -447,15 +471,7 @@ def scrape():
         _write_json_atomic(OUTPUT_DIR / filename, run)
 
         done_msg = {"type": "done", "result": run, "saved_as": filename}
-        with _scans_lock:
-            if scan_id in _scans:
-                # Use blocking put for the final message (must be delivered).
-                # The queue maxsize is large enough that this will not block in
-                # practice; we use put() not put_nowait() here intentionally.
-                _scans[scan_id]["queue"].put(done_msg)
-                _scans[scan_id]["final"] = done_msg
-            else:
-                q.put(done_msg)
+        _complete_scan(scan_id, done_msg)
 
     threading.Thread(target=run_scan, daemon=True).start()
     return jsonify({"scan_id": scan_id})
@@ -486,7 +502,7 @@ def scan_stream(scan_id):
             try:
                 msg = q.get(timeout=30)
                 yield f"data: {json.dumps(msg)}\n\n"
-                if msg.get("type") in ("done", "error"):
+                if msg.get("type") in ("done", "error", "session_expired"):
                     break
             except queue.Empty:
                 yield 'data: {"type":"ping"}\n\n'

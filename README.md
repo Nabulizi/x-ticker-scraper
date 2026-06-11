@@ -87,7 +87,21 @@ source venv/bin/activate
 python3 app.py
 ```
 
-Then open **http://localhost:5000** in your browser.
+Then open **http://localhost:8080** in your browser.
+
+## Testing
+
+Offline regression tests cover parser behavior, scan lifecycle safety, secure
+session-file writes, and persistence semantics. They do not scrape X or call
+Yahoo Finance.
+
+```bash
+source venv/bin/activate
+python3 test_scraper_parse.py
+python3 test_safety_regressions.py
+```
+
+GitHub Actions runs the same offline checks on push and pull request.
 
 ## Usage
 

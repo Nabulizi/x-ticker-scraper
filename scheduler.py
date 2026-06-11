@@ -45,6 +45,7 @@ _state: dict = {
     "last_returns_update": None,  # unix timestamp of last forward-return backfill
 }
 _lock = threading.Lock()
+_started = False
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -259,6 +260,11 @@ def _loop() -> None:
 
 def start() -> None:
     """Start the background scheduler daemon thread. Safe to call multiple times."""
+    global _started
+    with _lock:
+        if _started:
+            return
+        _started = True
     t = threading.Thread(target=_loop, daemon=True, name="auto-scan-scheduler")
     t.start()
     print("[✓] Auto-scan scheduler started")

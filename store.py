@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS mentions (
     is_trailing_tag INTEGER DEFAULT 0,
     price_at_mention REAL,
     ret_1d  REAL, ret_5d REAL, ret_20d REAL,
-    UNIQUE(post_id, ticker)
+    UNIQUE(account, post_id, ticker)
 );
 CREATE TABLE IF NOT EXISTS accounts (
     account      TEXT PRIMARY KEY,
@@ -73,7 +73,42 @@ def _conn():
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA synchronous=NORMAL")  # safe with WAL; faster than FULL
     c.executescript(_SCHEMA)
+    _migrate_observed_post_ids(c)
     return c
+
+
+def _migrate_observed_post_ids(c: sqlite3.Connection) -> None:
+    """
+    Older databases keyed posts by the original X status id only. That caused
+    two monitored accounts reposting the same status to collapse into one
+    persisted mention. New rows use an account-observed id: account:status_id.
+    """
+    c.executescript(
+        """
+        DELETE FROM posts
+        WHERE instr(post_id, ':') = 0
+          AND EXISTS (
+              SELECT 1 FROM posts p2
+              WHERE p2.post_id = posts.account || ':' || posts.post_id
+          );
+
+        UPDATE posts
+        SET post_id = account || ':' || post_id
+        WHERE instr(post_id, ':') = 0;
+
+        DELETE FROM mentions
+        WHERE instr(post_id, ':') = 0
+          AND EXISTS (
+              SELECT 1 FROM mentions m2
+              WHERE m2.post_id = mentions.account || ':' || mentions.post_id
+                AND m2.ticker = mentions.ticker
+          );
+
+        UPDATE mentions
+        SET post_id = account || ':' || post_id
+        WHERE instr(post_id, ':') = 0;
+        """
+    )
 
 
 def _tz_or_utc(tz_name: Optional[str]):
@@ -94,17 +129,22 @@ def _parse_posted_at(ts: Optional[str]):
         return None
 
 
-def _post_id(account: str, post: dict) -> str:
+def _source_post_id(post: dict) -> str:
     """Prefer the X status id from the permalink; else a stable content hash."""
     url = post.get("url") or ""
     if "/status/" in url:
         return url.rsplit("/status/", 1)[1].split("?")[0].strip("/")
-    h = hashlib.sha1(f"{account}:{post.get('text','')}".encode()).hexdigest()[:16]
+    h = hashlib.sha1((post.get("text", "") or "").encode()).hexdigest()[:16]
     return f"h_{h}"
 
 
+def _post_id(account: str, post: dict) -> str:
+    """Return the monitored account's observation of a source post."""
+    return f"{account}:{_source_post_id(post)}"
+
+
 def record_run(run: dict) -> None:
-    """Persist a completed scan. Idempotent on (post_id) and (post_id, ticker)."""
+    """Persist a completed scan. Idempotent per account, post, and ticker."""
     now = datetime.now(timezone.utc).isoformat()
     # price lookup for price_at_mention, taken from the enriched combined list
     price_by_ticker = {c["ticker"]: c.get("price") for c in run.get("combined_tickers", [])}

@@ -11,7 +11,9 @@ Usage:
 """
 
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 COOKIES_FILE = Path(__file__).parent / "cookies.json"
@@ -39,6 +41,22 @@ def convert(raw: list) -> dict:
     return {"cookies": cookies, "origins": []}
 
 
+def _write_session_secure(session: dict) -> None:
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=SESSION_FILE.parent, suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(session, f, indent=2)
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, SESSION_FILE)
+        SESSION_FILE.chmod(0o600)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def main():
     if not COOKIES_FILE.exists():
         print(f"[✗] {COOKIES_FILE} not found.")
@@ -55,8 +73,7 @@ def main():
 
     session = convert(raw)
 
-    with open(SESSION_FILE, "w") as f:
-        json.dump(session, f, indent=2)
+    _write_session_secure(session)
 
     print(f"[✓] Wrote {len(session['cookies'])} cookies to {SESSION_FILE}")
     print("    The scraper will now use this session and skip login.")
