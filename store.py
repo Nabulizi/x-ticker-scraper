@@ -61,12 +61,17 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 CREATE INDEX IF NOT EXISTS idx_mentions_ticker ON mentions(ticker, posted_at);
 CREATE INDEX IF NOT EXISTS idx_mentions_account ON mentions(account, posted_at);
+CREATE INDEX IF NOT EXISTS idx_mentions_posted_at ON mentions(posted_at);
 """
 
 
 def _conn():
     DB_PATH.parent.mkdir(exist_ok=True)
     c = sqlite3.connect(DB_PATH, timeout=10)
+    # WAL mode allows concurrent reads during writes and reduces lock contention
+    # when multiple scans finish simultaneously.
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA synchronous=NORMAL")  # safe with WAL; faster than FULL
     c.executescript(_SCHEMA)
     return c
 
@@ -292,7 +297,7 @@ def update_forward_returns(progress=None) -> dict:
     Baseline is the CLOSE on the first trading day on/after the post date
     (NOT price_at_mention, which is captured at scan time and can be days after
     the post). ret_Nd = % change from that baseline N trading days later. History
-    is fetched once per ticker (grouped) to minimise yfinance calls.
+    is fetched in a single yf.download() batch call to minimise HTTP requests.
 
     Returns a summary dict:
       {updated, tickers_total, tickers_ok, tickers_failed, rate_limited}
@@ -324,72 +329,93 @@ def update_forward_returns(progress=None) -> dict:
 
     today = datetime.now(timezone.utc).date()
 
-    def _history(tk_symbol, start, end):
-        """Fetch with backoff; re-raise so rate-limits are distinguishable."""
-        last = None
-        for attempt in range(3):
-            try:
-                tk = yf.Ticker(tk_symbol, session=session) if session else yf.Ticker(tk_symbol)
-                return tk.history(start=start, end=end, auto_adjust=True)
-            except Exception as exc:  # noqa: BLE001
-                last = exc
-                if "rate" in str(exc).lower() or "too many" in str(exc).lower():
-                    summary["rate_limited"] = True
-                time.sleep(1.0 * (attempt + 1))
-        raise last if last else RuntimeError("history failed")
+    # Compute the overall date range for a single batch download
+    all_dates = [d for items in by_ticker.values() for _, d in items if d]
+    if not all_dates:
+        return summary
+    global_start = min(all_dates)
+    try:
+        global_end = min(
+            datetime.fromisoformat(max(all_dates)).date() + timedelta(days=45), today
+        )
+    except ValueError:
+        return summary
+
+    # Single batch download for all tickers
+    import warnings
+    all_tickers = list(by_ticker.keys())
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            kwargs = {"session": session} if session else {}
+            raw = yf.download(
+                all_tickers,
+                start=global_start,
+                end=global_end.isoformat(),
+                auto_adjust=True,
+                progress=False,
+                **kwargs,
+            )
+    except Exception as exc:
+        if "rate" in str(exc).lower() or "too many" in str(exc).lower():
+            summary["rate_limited"] = True
+        summary["tickers_failed"] = len(all_tickers)
+        return summary
+
+    if raw is None or raw.empty:
+        return summary
+
+    # yf.download returns MultiIndex columns when multiple tickers are requested
+    close_df = raw["Close"] if "Close" in raw.columns else raw
 
     for ticker, items in by_ticker.items():
         dates = [d for _, d in items if d]
         if not dates:
             continue
-        start = min(dates)
-        # End ~45 calendar days past the latest post (≈30 trading days for ret_20d),
-        # capped at today. yfinance ignores period when start/end are set.
-        try:
-            end = min(datetime.fromisoformat(max(dates)).date() + timedelta(days=45), today)
-        except ValueError:
-            continue
 
         try:
-            hist = _history(ticker, start, end.isoformat())
+            if ticker not in close_df.columns:
+                summary["tickers_failed"] += 1
+                continue
+            series = close_df[ticker].dropna()
+            if series.empty:
+                summary["tickers_failed"] += 1
+                continue
+
+            closes = series.tolist()
+            idx_dates = [d.date().isoformat() for d in series.index]
+            summary["tickers_ok"] += 1
+
+            rows = []
+            for mid, pd_date in items:
+                base_i = next((i for i, d in enumerate(idx_dates) if d >= pd_date), None)
+                if base_i is None:
+                    continue
+                base = closes[base_i]
+                if not base:
+                    continue
+
+                def ret(n, _closes=closes, _base_i=base_i, _base=base):
+                    j = _base_i + n
+                    return round((_closes[j] - _base) / _base * 100, 2) if j < len(_closes) else None
+
+                rows.append((ret(1), ret(5), ret(20), mid))
+
+            if rows:
+                with _lock, _conn() as c:
+                    c.executemany(
+                        "UPDATE mentions SET ret_1d=?, ret_5d=?, ret_20d=? WHERE id=?", rows
+                    )
+                summary["updated"] += sum(1 for r in rows if r[1] is not None)
+
         except Exception:
             summary["tickers_failed"] += 1
             continue
-        if hist is None or hist.empty:
-            # No data in range (e.g. post date still in the future vs. real market data)
-            continue
-
-        summary["tickers_ok"] += 1
-        closes = hist["Close"].tolist()
-        idx_dates = [d.date().isoformat() for d in hist.index]
-
-        rows = []
-        for mid, pd_date in items:
-            base_i = next((i for i, d in enumerate(idx_dates) if d >= pd_date), None)
-            if base_i is None:
-                continue
-            base = closes[base_i]
-            if not base:
-                continue
-
-            def ret(n):
-                j = base_i + n
-                return round((closes[j] - base) / base * 100, 2) if j < len(closes) else None
-
-            rows.append((ret(1), ret(5), ret(20), mid))
-
-        if rows:
-            with _lock, _conn() as c:
-                c.executemany(
-                    "UPDATE mentions SET ret_1d=?, ret_5d=?, ret_20d=? WHERE id=?", rows
-                )
-            summary["updated"] += sum(1 for r in rows if r[1] is not None)
 
         if progress:
             try:
                 progress(ticker, summary["updated"])
             except Exception:
                 pass
-        time.sleep(0.3)  # be gentle with yfinance between tickers
 
     return summary

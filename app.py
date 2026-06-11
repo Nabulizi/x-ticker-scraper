@@ -41,26 +41,30 @@ WATCHLISTS_FILE = Path(__file__).parent / "data" / "watchlists.json"
 _tickers_db = None
 _tickers_db_lock = threading.Lock()
 
-# In-progress scan registry  {scan_id: {"queue": Queue, "final": dict|None}}
+# In-progress scan registry  {scan_id: {"queue": Queue, "final": dict|None, "ts": float}}
 _scans: dict = {}
 _scans_lock = threading.Lock()
 MAX_SCANS = 20
+SCAN_TTL = 300  # evict finished scans after 5 minutes
 
 
 def get_tickers_db() -> set:
     global _tickers_db
-    if _tickers_db is not None:
-        return _tickers_db
     with _tickers_db_lock:
         if _tickers_db is None:
             _tickers_db = load_tickers()
-    return _tickers_db
+        return _tickers_db
 
 
 def _register_scan(scan_id: str, q: queue.Queue) -> None:
     with _scans_lock:
-        _scans[scan_id] = {"queue": q, "final": None}
-        if len(_scans) > MAX_SCANS:
+        _scans[scan_id] = {"queue": q, "final": None, "ts": time.time()}
+        # Evict by age first, then by count
+        now = time.time()
+        for sid in list(_scans.keys()):
+            if now - _scans[sid]["ts"] > SCAN_TTL:
+                del _scans[sid]
+        while len(_scans) > MAX_SCANS:
             oldest = next(iter(_scans))
             del _scans[oldest]
 
@@ -98,12 +102,20 @@ def _parse_since_date(since_raw: str, client_tz_name: Optional[str]):
     if not raw:
         return None
 
+    # Reject anything that isn't a plain date/datetime string before parsing.
+    if len(raw) > 32 or not re.match(r'^[\d\-T:+Z.]+$', raw):
+        raise ValueError("Invalid date format")
+
     parsed = datetime.fromisoformat(raw)
     if parsed.tzinfo is not None:
         return parsed.astimezone(timezone.utc)
 
     client_tz = _client_timezone(client_tz_name)
-    return parsed.replace(tzinfo=client_tz).astimezone(timezone.utc)
+    try:
+        return parsed.replace(tzinfo=client_tz).astimezone(timezone.utc)
+    except Exception:
+        # DST gap/ambiguity (e.g. spring-forward) — fall back to UTC
+        return parsed.replace(tzinfo=timezone.utc)
 
 
 def build_digest(run: dict) -> dict:
@@ -265,15 +277,18 @@ def scrape():
         try:
             since_date = _parse_since_date(since_raw, client_timezone)
         except ValueError:
-            return jsonify({"error": f"Invalid since_date '{since_raw}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS."}), 400
+            return jsonify({"error": "Invalid since_date. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS."}), 400
 
     scan_id = str(uuid.uuid4())
-    q: queue.Queue = queue.Queue()
+    q: queue.Queue = queue.Queue(maxsize=200)
     _register_scan(scan_id, q)
 
     def run_scan():
         def emit(msg: dict) -> None:
-            q.put(msg)
+            try:
+                q.put_nowait(msg)
+            except queue.Full:
+                pass  # client fell behind — drop progress message
 
         try:
             scraped = asyncio.run(
@@ -434,11 +449,11 @@ def scrape():
         done_msg = {"type": "done", "result": run, "saved_as": filename}
         with _scans_lock:
             if scan_id in _scans:
-                _scans[scan_id]["final"] = done_msg
-                # Put inside lock so final state and queue message are set atomically.
-                # A reconnecting SSE client reading scan["final"] will never race
-                # with the queue put and spin-wait 30s unnecessarily.
+                # Use blocking put for the final message (must be delivered).
+                # The queue maxsize is large enough that this will not block in
+                # practice; we use put() not put_nowait() here intentionally.
                 _scans[scan_id]["queue"].put(done_msg)
+                _scans[scan_id]["final"] = done_msg
             else:
                 q.put(done_msg)
 
@@ -503,8 +518,8 @@ def save_watchlist():
 
     if not name or len(name) > 50:
         return jsonify({"error": "Watchlist name must be 1–50 characters"}), 400
-    if not re.match(r'^[A-Za-z0-9 _\-]{1,50}$', name):
-        return jsonify({"error": "Watchlist name: letters, digits, spaces, _ and - only"}), 400
+    if not re.match(r'^(?=.*[A-Za-z0-9])[A-Za-z0-9 _\-]{1,50}$', name):
+        return jsonify({"error": "Watchlist name must contain at least one letter or digit, using only letters, digits, spaces, _ and -"}), 400
     if not accounts or not isinstance(accounts, list):
         return jsonify({"error": "accounts must be a non-empty list"}), 400
 
@@ -625,7 +640,7 @@ def _write_json_atomic(path: Path, data) -> None:
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
+    port = int(os.environ.get("PORT", "8080"))
     print("[→] Loading US ticker database...")
     get_tickers_db()
     if scheduler is not None:

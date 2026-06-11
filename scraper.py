@@ -19,6 +19,15 @@ _USERNAME_RE = re.compile(r'^[A-Za-z0-9_]{1,50}$')
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
+def _secure_session_file() -> None:
+    """Restrict session.json to owner-read/write only (chmod 600).
+    Silently ignored on platforms that don't support chmod (e.g. Windows)."""
+    try:
+        SESSION_FILE.chmod(0o600)
+    except (OSError, NotImplementedError):
+        pass
+
+
 def _emit(progress, msg: dict) -> None:
     if progress:
         try:
@@ -50,8 +59,7 @@ def validate_username(username: str) -> str:
     username = username.strip().lstrip("@")
     if not _USERNAME_RE.match(username):
         raise ValueError(
-            f"Invalid username '{username}'. "
-            "Only letters, digits and underscores are allowed (max 50 chars)."
+            "Only letters, digits and underscores are allowed (1–50 chars)."
         )
     return username
 
@@ -608,6 +616,7 @@ async def _save_login_session(*, headless: bool, slow_mo: int = 0, progress=None
                 raise SessionExpired("X login did not complete successfully.") from exc
 
             await context.storage_state(path=str(SESSION_FILE))
+            _secure_session_file()
         finally:
             await browser.close()
 
@@ -714,8 +723,10 @@ def _to_int(token: str) -> Optional[int]:
     if not m:
         return None
     try:
-        return int(float(m.group(1).replace(",", "")) * _MULT[m.group(2).upper()])
-    except (ValueError, KeyError):
+        val = int(float(m.group(1).replace(",", "")) * _MULT[m.group(2).upper()])
+        # Cap at SQLite INTEGER max to prevent overflow on store
+        return min(val, 9_223_372_036_854_775_807)
+    except (ValueError, KeyError, OverflowError):
         return None
 
 
@@ -1234,6 +1245,7 @@ async def scrape_accounts(
 
         # Persist any refreshed cookies so the session stays alive between runs
         await context.storage_state(path=str(SESSION_FILE))
+        _secure_session_file()
         await browser.close()
 
     return results

@@ -51,7 +51,10 @@ def load_tickers() -> set:
                 headers={"User-Agent": "x-ticker-scraper/1.0 (personal research tool; abulizi.nueraili@gmail.com)"},
             )
             with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read())
+                # Cap response size to prevent memory exhaustion from a corrupt
+                # or unexpectedly large server response.
+                MAX_RESPONSE_BYTES = 20 * 1024 * 1024  # 20 MB
+                data = json.loads(resp.read(MAX_RESPONSE_BYTES))
 
             tickers = {v["ticker"].upper() for v in data.values() if v.get("ticker")}
             _write_cache_atomic(CACHE_FILE, sorted(tickers))

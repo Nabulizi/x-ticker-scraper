@@ -62,8 +62,11 @@ def _load(path: Path) -> dict:
         try:
             with open(path) as f:
                 return json.load(f)
-        except Exception:
-            pass
+        except json.JSONDecodeError:
+            print(f"[!] Corrupted cache at {path} — deleting and rebuilding")
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            print(f"[!] Could not read cache at {path}: {e}")
     return {}
 
 
@@ -80,14 +83,17 @@ def _with_retry(fn, ticker):
 
 def _yf_session():
     """Return a curl_cffi session impersonating Chrome — bypasses Yahoo Finance
-    rate limiting and self-signed certificate proxies."""
+    rate limiting. SSL verification is kept enabled to prevent MITM attacks."""
     try:
         from curl_cffi import requests as cffi_requests
-        return cffi_requests.Session(impersonate="chrome110", verify=False)
+        return cffi_requests.Session(impersonate="chrome110", verify=True)
     except ImportError:
         import requests as _req
         s = _req.Session()
-        s.verify = False
+        # If behind a corporate proxy with a custom CA, set the REQUESTS_CA_BUNDLE
+        # environment variable to the path of the CA bundle instead of disabling
+        # verification entirely.
+        s.verify = os.environ.get("REQUESTS_CA_BUNDLE", True)
         return s
 
 

@@ -86,11 +86,21 @@ def _load_watchlist_accounts() -> list:
 
 
 def _osascript(title: str, body: str, sound: str = "Ping") -> None:
-    """Fire a native macOS notification. Best-effort — never raises."""
+    """Fire a native macOS notification. Best-effort — never raises.
+    Inputs are sanitized to prevent AppleScript injection from scraped data."""
+    def _sanitize(s: str) -> str:
+        # Use json.dumps to safely encode the string as an AppleScript string
+        # literal — this escapes quotes, backslashes and control characters.
+        return json.dumps(str(s)[:200])
+
     try:
+        script = (
+            f'display notification {_sanitize(body)} '
+            f'with title {_sanitize(title)} '
+            f'sound name {_sanitize(sound)}'
+        )
         subprocess.run(
-            ["osascript", "-e",
-             f'display notification "{body}" with title "{title}" sound name "{sound}"'],
+            ["osascript", "-e", script],
             timeout=5,
             capture_output=True,
         )

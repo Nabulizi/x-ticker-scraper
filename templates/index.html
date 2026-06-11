@@ -437,7 +437,7 @@
       currentES = new EventSource('/scan/stream/' + data.scan_id);
       currentES.onmessage = (ev) => handleProgressEvent(JSON.parse(ev.data));
       currentES.onerror = () => {
-        if (currentES && currentES.readyState === EventSource.CLOSED) return;
+        if (!currentES || currentES.readyState === EventSource.CLOSED) return;
         showError('Stream connection lost. The scan may still be running in the background.');
         resetScanBtn();
       };
@@ -1134,7 +1134,7 @@
         p.replies != null ? `${SVG.message} ${p.replies}` : '',
         p.views   != null ? `${SVG.eye} ${p.views}`   : '',
       ].filter(Boolean).join('  ');
-      const link = p.url ? `<a href="${escHtml(p.url)}" target="_blank" rel="noopener" class="text-blue-500 hover:underline">↗ open</a>` : '';
+      const link = p.url ? `<a href="${escAttr(safeUrl(p.url))}" target="_blank" rel="noopener noreferrer" class="text-blue-500 hover:underline">↗ open</a>` : '';
       const repostBadge = p.is_repost ? '<span class="text-xs text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">↺ repost</span>' : '';
       const acct = account ? `<span class="font-bold text-white">@${escHtml(account)}</span>` : '';
       return `<div class="bg-slate-900/95 border border-slate-800 rounded-xl p-4">
@@ -1246,6 +1246,15 @@
       return String(str || '')
         .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    /** Allow only http/https URLs to prevent javascript: or data: injection. */
+    function safeUrl(url) {
+      try {
+        const u = new URL(String(url || ''));
+        if (u.protocol === 'https:' || u.protocol === 'http:') return url;
+      } catch (_) {}
+      return '#';
     }
 
     // ── Account scorecard ─────────────────────────────────────────────────────
