@@ -416,12 +416,11 @@
 
       let data;
       try {
-        const resp = await fetch('/scrape', {
+        data = await fetchJson('/scrape', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ usernames, count, since_date, client_timezone }),
         });
-        data = await resp.json();
       } catch (e) {
         showError('Could not start scan: ' + e.message);
         resetScanBtn();
@@ -450,7 +449,7 @@
       let accounts = document.getElementById('usernames').value.trim();
       if (!accounts) {
         try {
-          const wl = await (await fetch('/watchlists')).json();
+          const wl = await fetchJson('/watchlists');
           const all = [...new Set(Object.values(wl).flat())];
           if (all.length) {
             document.getElementById('usernames').value = all.join('\n');
@@ -553,12 +552,32 @@
       document.getElementById('digestBtn').disabled = false;
     }
 
+    async function fetchJson(url, options = {}) {
+      const resp = await fetch(url, options);
+      const text = await resp.text();
+      let data = {};
+      if (text) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          const snippet = text.replace(/\s+/g, ' ').trim().slice(0, 240) || 'empty response';
+          throw new Error(`Request failed (${resp.status} ${resp.statusText}): ${snippet}`);
+        }
+      }
+      if (!resp.ok) {
+        const message = data && typeof data === 'object' && data.error
+          ? data.error
+          : `${resp.status} ${resp.statusText}`;
+        throw new Error(message);
+      }
+      return data;
+    }
+
     // ── X session ─────────────────────────────────────────────────────────────
 
     async function checkXSession() {
       try {
-        const resp = await fetch('/session-status');
-        const data = await resp.json();
+        const data = await fetchJson('/session-status');
         updateXStatus(data.connected);
       } catch (e) { /* ignore */ }
     }
@@ -592,8 +611,7 @@
       btn.disabled = true; btn.textContent = 'Opening browser...';
       bannerBtn.disabled = true; bannerBtn.textContent = 'Opening browser...';
       try {
-        const resp = await fetch('/connect-x', { method: 'POST' });
-        const data = await resp.json();
+        const data = await fetchJson('/connect-x', { method: 'POST' });
         if (data.ok) {
           updateXStatus(true);
           document.getElementById('sessionBanner').classList.add('hidden');
@@ -612,8 +630,7 @@
 
     async function loadWatchlists() {
       try {
-        const resp = await fetch('/watchlists');
-        renderWatchlistChips(await resp.json());
+        renderWatchlistChips(await fetchJson('/watchlists'));
       } catch (e) { /* silently ignore */ }
     }
 
@@ -671,12 +688,11 @@
         .map(s => s.trim().replace(/^@/, '')).filter(Boolean);
 
       try {
-        const resp = await fetch('/watchlists', {
+        const data = await fetchJson('/watchlists', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name, accounts }),
         });
-        const data = await resp.json();
         if (data.error) { showError(data.error); return; }
         hideSaveWatchlist();
         loadWatchlists();
@@ -688,7 +704,7 @@
     async function deleteWatchlist(btn, name) {
       if (btn.dataset.confirming) {
         try {
-          await fetch('/watchlists/' + encodeURIComponent(name), { method: 'DELETE' });
+          await fetchJson('/watchlists/' + encodeURIComponent(name), { method: 'DELETE' });
           loadWatchlists();
         } catch (e) { /* ignore */ }
         return;
@@ -869,9 +885,7 @@
       if (!combined.length) return;
       const symbols = combined.map(t => t.ticker).join(',');
       try {
-        const resp = await fetch(`/velocity/batch?tickers=${encodeURIComponent(symbols)}&days=7`);
-        if (!resp.ok) return;
-        const velocityMap = await resp.json();
+        const velocityMap = await fetchJson(`/velocity/batch?tickers=${encodeURIComponent(symbols)}&days=7`);
         renderCombinedTable(combined, maxSignal, velocityMap);
       } catch (e) { /* velocity data is optional */ }
     }
@@ -1225,9 +1239,7 @@
     async function loadResult(filename) {
       try {
         document.getElementById('errorBox').classList.add('hidden');
-        const resp = await fetch('/results/' + encodeURIComponent(filename));
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const result = await resp.json();
+        const result = await fetchJson('/results/' + encodeURIComponent(filename));
         currentResult = { result, saved_as: filename };
         renderResults(result);
         document.getElementById('results').scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
@@ -1270,13 +1282,7 @@
       const body = document.getElementById('scorecardBody');
       body.innerHTML = '<p class="text-slate-500 text-xs">Loading…</p>';
       try {
-        const resp = await fetch('/scorecard?min_calls=3');
-        if (!resp.ok) {
-          const d = await resp.json();
-          body.innerHTML = `<p class="text-slate-500 text-xs">${escHtml(d.error || 'Unavailable')}</p>`;
-          return;
-        }
-        const rows = await resp.json();
+        const rows = await fetchJson('/scorecard?min_calls=3');
         if (!rows.length) {
           body.innerHTML = '<p class="text-slate-500 text-xs">No data yet — forward returns are backfilled nightly after scans accumulate a few days of history.</p>';
           return;
@@ -1335,8 +1341,7 @@
 
     async function refreshAutoScanStatus() {
       try {
-        const resp = await fetch('/auto-scan/status');
-        const d = await resp.json();
+        const d = await fetchJson('/auto-scan/status');
         const badge = document.getElementById('autoScanBadge');
         if (!d.available) return;
         badge.classList.remove('hidden');
@@ -1356,10 +1361,9 @@
 
     async function toggleAutoScan() {
       try {
-        const resp = await fetch('/auto-scan/status');
-        const d = await resp.json();
+        const d = await fetchJson('/auto-scan/status');
         if (!d.available) return;
-        await fetch('/auto-scan/toggle', {
+        await fetchJson('/auto-scan/toggle', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ enabled: !d.enabled }),
