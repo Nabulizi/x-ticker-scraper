@@ -196,27 +196,31 @@ def test_refresh_session_stays_headless_when_render_flag_is_set():
 def test_headless_mode_can_prefer_google_login():
     import scraper
 
-    original_flag = os.environ.get("XTS_CONNECT_HEADLESS")
-    original_user = os.environ.get("X_USERNAME")
-    original_pass = os.environ.get("X_PASSWORD")
+    saved = {k: os.environ.get(k) for k in ("XTS_CONNECT_HEADLESS", "X_USERNAME", "X_PASSWORD", "X_EMAIL", "GOOGLE_EMAIL", "GOOGLE_PASSWORD", "X_LOGIN_METHOD")}
     try:
+        # A plain X username must NOT be treated as a Google email (old bug).
         os.environ["XTS_CONNECT_HEADLESS"] = "1"
         os.environ["X_USERNAME"] = "user"
         os.environ["X_PASSWORD"] = "pass"
-        assert scraper._should_prefer_google_login(x_username="user", x_password="pass") is True
+        os.environ.pop("X_EMAIL", None)
+        os.environ.pop("GOOGLE_EMAIL", None)
+        os.environ.pop("GOOGLE_PASSWORD", None)
+        os.environ.pop("X_LOGIN_METHOD", None)
+        assert scraper._should_prefer_google_login(x_username="user", x_password="pass") is False, \
+            "X_USERNAME alone must not trigger Google login"
+
+        # Google login IS preferred when X_LOGIN_METHOD=google is explicit.
+        os.environ["X_LOGIN_METHOD"] = "google"
+        os.environ["GOOGLE_EMAIL"] = "user@gmail.com"
+        os.environ["GOOGLE_PASSWORD"] = "gpass"
+        assert scraper._should_prefer_google_login(x_username="user", x_password="pass") is True, \
+            "X_LOGIN_METHOD=google with GOOGLE_EMAIL should prefer Google"
     finally:
-        if original_flag is None:
-            os.environ.pop("XTS_CONNECT_HEADLESS", None)
-        else:
-            os.environ["XTS_CONNECT_HEADLESS"] = original_flag
-        if original_user is None:
-            os.environ.pop("X_USERNAME", None)
-        else:
-            os.environ["X_USERNAME"] = original_user
-        if original_pass is None:
-            os.environ.pop("X_PASSWORD", None)
-        else:
-            os.environ["X_PASSWORD"] = original_pass
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 if __name__ == "__main__":
