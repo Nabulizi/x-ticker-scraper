@@ -109,14 +109,14 @@ watchlists, scan output, and X session survive restarts.
 In Render, create the service from the Blueprint and set the prompted secrets:
 
 ```env
-APP_PASSWORD=a_long_random_password_for_the_dashboard
 X_USERNAME=your_x_username_or_email
 X_PASSWORD=your_x_password
 X_EMAIL=optional_email_for_extra_X_verification
 ```
 
-`APP_USERNAME` defaults to `admin`. Set `APP_PASSWORD` on Render so the public
-dashboard URL requires Basic Auth; leave it unset for open local development.
+By default, anyone with the Render URL can open and use the dashboard. If you
+later want to make the dashboard private, set `APP_PASSWORD` in Render; the
+username defaults to `admin` unless you also set `APP_USERNAME`.
 
 The deployed service uses:
 
