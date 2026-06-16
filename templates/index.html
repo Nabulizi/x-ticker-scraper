@@ -565,8 +565,8 @@
         }
       }
       if (!resp.ok) {
-        const message = data && typeof data === 'object' && data.error
-          ? data.error
+        const message = data && typeof data === 'object'
+          ? (data.error || data.message || `${resp.status} ${resp.statusText}`)
           : `${resp.status} ${resp.statusText}`;
         throw new Error(message);
       }

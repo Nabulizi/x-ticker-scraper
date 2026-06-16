@@ -128,7 +128,15 @@ def validate_username(username: str) -> str:
 # (Inspired by Scrapling's StealthyFetcher — we keep our own Playwright auth /
 # scroll logic and just borrow the hardening ideas.)
 
-_STEALTH_ARGS = ["--disable-blink-features=AutomationControlled"]
+_STEALTH_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    # Required for Chromium inside Docker/container environments (Render, etc.).
+    # --no-sandbox: kernel namespacing is unavailable in most container runtimes.
+    # --disable-dev-shm-usage: /dev/shm is only 64 MB by default in Docker;
+    #   Chrome uses it for shared memory and crashes without this flag.
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+]
 HEADLESS_REFRESH_TIMEOUT = 120
 VISIBLE_REFRESH_TIMEOUT = 180
 
