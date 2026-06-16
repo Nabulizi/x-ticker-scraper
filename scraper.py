@@ -272,14 +272,6 @@ def _use_google_login() -> bool:
 
 
 def _headless_only_mode() -> bool:
-    """
-    Return True when we should avoid any visible-browser launch.
-
-    Render containers have no X server, so any login path that falls back to a
-    headed browser will fail there. Reuse the existing headless flag so the
-    hosted deployment stays headless for both manual reconnects and automatic
-    refreshes.
-    """
     flag = os.getenv("XTS_CONNECT_HEADLESS", "").strip().lower()
     if flag in {"1", "true", "yes"}:
         return True
@@ -330,14 +322,16 @@ async def _complete_google_popup_login(
 ) -> None:
     _emit(progress, {
         "type": "progress",
-        "message": "X login page loaded. Opening Google sign-in popup...",
+        "message": "X login page loaded. Opening Google sign-in flow...",
     })
+    popup = None
     try:
         async with page.expect_popup(timeout=10000) as popup_info:
             clicked = await _click_first_available(
                 page,
                 [
                     lambda p: p.get_by_role("button", name="Continue with Google"),
+                    lambda p: p.get_by_role("link", name="Continue with Google"),
                     lambda p: p.get_by_text("Continue with Google", exact=True),
                 ],
                 timeout=4000,
@@ -347,14 +341,21 @@ async def _complete_google_popup_login(
             if not clicked:
                 raise RuntimeError("Continue with Google button did not appear.")
         popup = await popup_info.value
-    except Exception as exc:
-        raise RuntimeError("Google sign-in popup did not open.") from exc
+    except Exception:
+        # Some headless environments do not materialize the popup. If the click
+        # navigated the current page in place, keep going with that page.
+        popup = page
 
     try:
         await popup.wait_for_load_state("domcontentloaded", timeout=15000)
+        if popup is page:
+            try:
+                await page.wait_for_url("**accounts.google.com/**", timeout=5000)
+            except PWTimeout:
+                pass
         _emit(progress, {
             "type": "progress",
-            "message": "Google popup opened. Entering Google email...",
+            "message": "Google sign-in ready. Entering Google email...",
         })
         email_field = await _wait_for_first_locator(
             popup,
@@ -427,7 +428,7 @@ async def _complete_google_popup_login(
                 except Exception:
                     pass
     finally:
-        if "popup" in locals() and popup and not popup.is_closed():
+        if popup is not page and popup and not popup.is_closed():
             try:
                 await popup.close()
             except Exception:
