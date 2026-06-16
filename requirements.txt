@@ -1,5 +1,6 @@
 playwright==1.44.0
 flask==3.0.3
+gunicorn==22.0.0
 python-dotenv==1.0.1
 yfinance>=1.2.0
 lxml>=5.0.0

@@ -99,6 +99,41 @@ python3 app.py
 
 Then open **http://localhost:8080** in your browser.
 
+## Deploying to Render
+
+This repo includes a `render.yaml` Blueprint and Dockerfile for Render. The
+Docker image uses the Playwright Python runtime, runs the app with Gunicorn, and
+mounts a 1 GB persistent disk at `/app/data` so your SQLite history, caches,
+watchlists, scan output, and X session survive restarts.
+
+In Render, create the service from the Blueprint and set the prompted secrets:
+
+```env
+APP_PASSWORD=a_long_random_password_for_the_dashboard
+X_USERNAME=your_x_username_or_email
+X_PASSWORD=your_x_password
+X_EMAIL=optional_email_for_extra_X_verification
+```
+
+`APP_USERNAME` defaults to `admin`. Set `APP_PASSWORD` on Render so the public
+dashboard URL requires Basic Auth; leave it unset for open local development.
+
+The deployed service uses:
+
+```env
+XTS_SESSION_FILE=/app/data/session.json
+XTS_OUTPUT_DIR=/app/data/output
+XTS_CONNECT_HEADLESS=1
+```
+
+With `XTS_CONNECT_HEADLESS=1`, the dashboard's reconnect button uses
+credential-based headless login instead of trying to open a visible browser in
+the Render container.
+
+Keep one Gunicorn worker for this app. The scraper uses one X session plus a
+single background scheduler, and multiple worker processes would each try to run
+their own scheduler.
+
 ### Auto-start on login (macOS)
 
 ```bash

@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: x-ticker-scraper
+    runtime: docker
+    plan: starter
+    healthCheckPath: /healthz
+    disk:
+      name: data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: XTS_OUTPUT_DIR
+        value: /app/data/output
+      - key: XTS_SESSION_FILE
+        value: /app/data/session.json
+      - key: XTS_CONNECT_HEADLESS
+        value: "1"
+      - key: X_LOGIN_METHOD
+        value: native
+      - key: APP_USERNAME
+        value: admin
+      - key: APP_PASSWORD
+        sync: false
+      - key: X_USERNAME
+        sync: false
+      - key: X_PASSWORD
+        sync: false
+      - key: X_EMAIL
+        sync: false

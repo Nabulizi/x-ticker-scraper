@@ -12,7 +12,7 @@ from playwright.async_api import async_playwright
 
 load_dotenv()
 
-SESSION_FILE = Path(__file__).parent / "session.json"
+SESSION_FILE = Path(os.getenv("XTS_SESSION_FILE", Path(__file__).parent / "session.json")).expanduser()
 
 # Valid X username: 1–50 alphanumeric/underscore characters
 _USERNAME_RE = re.compile(r'^[A-Za-z0-9_]{1,50}$')
@@ -23,6 +23,7 @@ def _secure_session_file() -> None:
     """Restrict session.json to owner-read/write only (chmod 600).
     Silently ignored on platforms that don't support chmod (e.g. Windows)."""
     try:
+        SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
         SESSION_FILE.chmod(0o600)
     except (OSError, NotImplementedError):
         pass
@@ -615,6 +616,7 @@ async def _save_login_session(*, headless: bool, slow_mo: int = 0, progress=None
             except PWTimeout as exc:
                 raise SessionExpired("X login did not complete successfully.") from exc
 
+            SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
             await context.storage_state(path=str(SESSION_FILE))
             _secure_session_file()
         finally:

@@ -1,0 +1,18 @@
+.git
+.github
+.claude
+.DS_Store
+
+# local secrets and browser session state
+.env
+.env.*
+session.json
+cookies.json
+
+# local runtime state
+data/
+output/
+venv/
+__pycache__/
+*.pyc
+*.pyo

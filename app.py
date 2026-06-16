@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import json
 import os
 import queue
@@ -31,8 +32,8 @@ except Exception:  # pragma: no cover
 load_dotenv()
 
 app = Flask(__name__)
-OUTPUT_DIR = Path(__file__).parent / "output"
-OUTPUT_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR = Path(os.getenv("XTS_OUTPUT_DIR", Path(__file__).parent / "output")).expanduser()
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 WATCHLISTS_FILE = Path(__file__).parent / "data" / "watchlists.json"
 
 # In-progress scan registry  {scan_id: {"queue": Queue, "final": dict|None, "ts": float}}
@@ -41,6 +42,48 @@ _scans_lock = threading.Lock()
 MAX_SCANS = 20
 MAX_ACTIVE_SCANS = 1
 SCAN_TTL = 300  # evict finished scans after 5 minutes
+_services_started = False
+_services_lock = threading.Lock()
+
+
+def start_background_services() -> None:
+    """Initialize startup work for both local runs and production WSGI servers."""
+    global _services_started
+    with _services_lock:
+        if _services_started:
+            return
+        _services_started = True
+
+    print("[→] Loading US ticker database...")
+    get_tickers_db()
+    if scheduler is not None and os.getenv("XTS_DISABLE_SCHEDULER", "").lower() not in {"1", "true", "yes"}:
+        scheduler.start()
+
+
+def _app_password() -> str:
+    return os.getenv("APP_PASSWORD", "").strip()
+
+
+@app.before_request
+def require_basic_auth():
+    password = _app_password()
+    if not password or request.endpoint == "healthz":
+        return None
+
+    username = os.getenv("APP_USERNAME", "admin").strip() or "admin"
+    auth = request.authorization
+    if (
+        auth
+        and hmac.compare_digest(auth.username or "", username)
+        and hmac.compare_digest(auth.password or "", password)
+    ):
+        return None
+
+    return Response(
+        "Authentication required\n",
+        401,
+        {"WWW-Authenticate": 'Basic realm="X Ticker Scraper"'},
+    )
 
 
 def _prune_scans_locked() -> None:
@@ -228,6 +271,11 @@ def index():
     return render_template("index.html", recent_runs=recent)
 
 
+@app.route("/healthz")
+def healthz():
+    return jsonify({"ok": True})
+
+
 @app.route("/session-status")
 def get_session_status():
     return jsonify(session_status())
@@ -236,13 +284,28 @@ def get_session_status():
 @app.route("/connect-x", methods=["POST"])
 def connect_x():
     """
-    Opens a visible Playwright browser so the user can log in to X once.
+    Logs in to X and saves session.json.
+    Locally this opens a visible Playwright browser. On hosted containers, set
+    XTS_CONNECT_HEADLESS=1 to use credential-based headless login instead.
     Saves session.json on success.  Runs synchronously (blocks until done or error).
     """
-    from scraper import _manual_login  # local import to avoid circular ref at module load
+    from scraper import _manual_login, _save_login_session  # local import avoids circular ref
     try:
-        asyncio.run(_manual_login())
+        if os.getenv("XTS_CONNECT_HEADLESS", "").lower() in {"1", "true", "yes"}:
+            timeout = max(15, min(int(os.getenv("XTS_CONNECT_TIMEOUT", "60")), 180))
+
+            async def headless_connect():
+                await asyncio.wait_for(
+                    _save_login_session(headless=True, slow_mo=60),
+                    timeout=timeout,
+                )
+
+            asyncio.run(headless_connect())
+        else:
+            asyncio.run(_manual_login())
         return jsonify({"ok": True, "message": "Connected successfully. You can now run scans."})
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
     except Exception as exc:
         return jsonify({"ok": False, "message": str(exc)}), 500
 
@@ -539,9 +602,6 @@ def _write_json_atomic(path: Path, data) -> None:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
-    print("[→] Loading US ticker database...")
-    get_tickers_db()
-    if scheduler is not None:
-        scheduler.start()
+    start_background_services()
     print(f"[✓] Ready — open http://localhost:{port}")
     app.run(debug=False, port=port)

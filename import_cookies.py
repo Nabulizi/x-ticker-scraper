@@ -16,8 +16,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-COOKIES_FILE = Path(__file__).parent / "cookies.json"
-SESSION_FILE = Path(__file__).parent / "session.json"
+COOKIES_FILE = Path(os.getenv("XTS_COOKIES_FILE", Path(__file__).parent / "cookies.json")).expanduser()
+SESSION_FILE = Path(os.getenv("XTS_SESSION_FILE", Path(__file__).parent / "session.json")).expanduser()
 
 SAMSITE_MAP = {"strict": "Strict", "lax": "Lax", "none": "None", "no_restriction": "None"}
 
@@ -42,6 +42,7 @@ def convert(raw: list) -> dict:
 
 
 def _write_session_secure(session: dict) -> None:
+    SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(dir=SESSION_FILE.parent, suffix=".tmp")
     try:
         with os.fdopen(tmp_fd, "w") as f:
