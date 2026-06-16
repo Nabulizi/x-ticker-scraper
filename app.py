@@ -281,6 +281,47 @@ def get_session_status():
     return jsonify(session_status())
 
 
+@app.route("/import-session", methods=["POST"])
+def import_session():
+    """
+    Accept a session.json file upload and write it to SESSION_FILE.
+    This is the recommended path for headless deployments (e.g. Render) where
+    the browser-based /connect-x login is blocked by X's bot detection.
+
+    Usage: generate session.json locally with _manual_login(), then upload it
+    via the web UI's "Import Session File" button.
+    """
+    from scraper import SESSION_FILE, _secure_session_file  # local import
+    f = request.files.get("session")
+    if not f:
+        return jsonify({"ok": False, "message": "No file uploaded."}), 400
+    try:
+        data = f.read()
+        json.loads(data)  # validate well-formed JSON before writing
+        SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=SESSION_FILE.parent)
+        try:
+            os.write(fd, data)
+            os.close(fd)
+            os.replace(tmp, str(SESSION_FILE))
+        except Exception:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+            raise
+        _secure_session_file()
+        return jsonify({"ok": True, "message": "Session imported successfully. You can now run scans."})
+    except (json.JSONDecodeError, ValueError):
+        return jsonify({"ok": False, "message": "Invalid file — must be a valid session.json exported by Playwright."}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 500
+
+
 @app.route("/connect-x", methods=["POST"])
 def connect_x():
     """

@@ -46,6 +46,10 @@
           class="hidden text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-3 py-1 rounded transition-colors">
           Connect X Account
         </button>
+        <label id="importSessionBtn" class="hidden cursor-pointer text-xs bg-sky-900 hover:bg-sky-800 border border-sky-700 text-sky-200 px-3 py-1 rounded transition-colors" title="Upload a session.json generated locally">
+          Import Session File
+          <input type="file" accept=".json,application/json" class="hidden" onchange="importSession(this)">
+        </label>
       </div>
     </div>
 
@@ -182,7 +186,13 @@
     <!-- Session expired banner -->
     <div id="sessionBanner" role="alert" class="hidden bg-yellow-950 border border-yellow-700 rounded-xl p-4 mb-6 text-yellow-300 text-sm flex items-center justify-between gap-4">
       <span id="sessionBannerMsg">X session expired. Please reconnect to continue scanning.</span>
-      <button onclick="connectX()" class="shrink-0 bg-yellow-700 hover:bg-yellow-600 text-white text-xs font-semibold px-4 py-1.5 rounded transition-colors" id="sessionBannerBtn">Connect X Account</button>
+      <div class="flex gap-2 shrink-0">
+        <button onclick="connectX()" class="bg-yellow-700 hover:bg-yellow-600 text-white text-xs font-semibold px-4 py-1.5 rounded transition-colors" id="sessionBannerBtn">Connect X Account</button>
+        <label class="cursor-pointer bg-sky-700 hover:bg-sky-600 text-white text-xs font-semibold px-4 py-1.5 rounded transition-colors" title="Upload session.json generated locally">
+          Import Session File
+          <input type="file" accept=".json,application/json" class="hidden" onchange="importSession(this)">
+        </label>
+      </div>
     </div>
 
     <!-- Error -->
@@ -585,16 +595,19 @@
     function updateXStatus(connected) {
       const badge = document.getElementById('xStatusBadge');
       const btn = document.getElementById('connectXBtn');
+      const importBtn = document.getElementById('importSessionBtn');
       badge.classList.remove('hidden');
       if (connected) {
         badge.textContent = '● X connected';
         badge.className = 'text-xs px-2 py-1 rounded border border-green-800 bg-green-950 text-green-400';
         btn.classList.add('hidden');
+        importBtn.classList.add('hidden');
         document.getElementById('sessionBanner').classList.add('hidden');
       } else {
         badge.textContent = '○ X disconnected';
         badge.className = 'text-xs px-2 py-1 rounded border border-yellow-800 bg-yellow-950 text-yellow-400';
         btn.classList.remove('hidden');
+        importBtn.classList.remove('hidden');
       }
     }
 
@@ -608,8 +621,8 @@
       const btn = document.getElementById('connectXBtn');
       const bannerBtn = document.getElementById('sessionBannerBtn');
       const origText = btn.textContent;
-      btn.disabled = true; btn.textContent = 'Opening browser...';
-      bannerBtn.disabled = true; bannerBtn.textContent = 'Opening browser...';
+      btn.disabled = true; btn.textContent = 'Connecting...';
+      bannerBtn.disabled = true; bannerBtn.textContent = 'Connecting...';
       try {
         const data = await fetchJson('/connect-x', { method: 'POST' });
         if (data.ok) {
@@ -623,6 +636,27 @@
       } finally {
         btn.disabled = false; btn.textContent = origText;
         bannerBtn.disabled = false; bannerBtn.textContent = 'Connect X Account';
+      }
+    }
+
+    async function importSession(input) {
+      const file = input.files[0];
+      if (!file) return;
+      // Reset so the same file can be re-imported if needed
+      input.value = '';
+      const formData = new FormData();
+      formData.append('session', file);
+      try {
+        const resp = await fetch('/import-session', { method: 'POST', body: formData });
+        const data = await resp.json();
+        if (data.ok) {
+          updateXStatus(true);
+          document.getElementById('sessionBanner').classList.add('hidden');
+        } else {
+          showError('Import failed: ' + data.message);
+        }
+      } catch (e) {
+        showError('Import failed: ' + e.message);
       }
     }
 

@@ -321,9 +321,9 @@ async def _wait_for_signed_in(page, timeout: int = 120_000) -> None:
 
 
 def _get_login_method() -> str:
-    method = os.getenv("X_LOGIN_METHOD", "auto").strip().lower()
+    method = os.getenv("X_LOGIN_METHOD", "native").strip().lower()
     if method not in {"auto", "native", "google"}:
-        return "auto"
+        return "native"
     return method
 
 
@@ -333,12 +333,12 @@ def _get_google_credentials(
     x_password: str = "",
     x_email: str = "",
 ) -> tuple[str, str]:
-    google_email = os.getenv("GOOGLE_EMAIL", "").strip() or x_email or x_username
+    google_email = os.getenv("GOOGLE_EMAIL", "").strip() or x_email
     google_password = os.getenv("GOOGLE_PASSWORD", "").strip() or x_password
     if not google_email or not google_password:
         raise ValueError(
-            "Google sign-in requires GOOGLE_EMAIL and GOOGLE_PASSWORD, "
-            "or compatible X_EMAIL/X_PASSWORD values in .env."
+            "Google sign-in requires GOOGLE_EMAIL and GOOGLE_PASSWORD "
+            "(or X_EMAIL + X_PASSWORD) in .env."
         )
     return google_email, google_password
 
