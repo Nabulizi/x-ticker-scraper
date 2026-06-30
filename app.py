@@ -283,6 +283,90 @@ def get_session_status():
     return jsonify(data)
 
 
+@app.route("/session-health")
+def session_health():
+    """
+    Proactive session check: verify the session file exists AND its cookies
+    haven't expired. Returns { healthy, connected, reason }.
+    """
+    from scraper import SESSION_FILE
+    if not SESSION_FILE.exists():
+        return jsonify({"healthy": False, "connected": False, "reason": "No session file found."})
+    try:
+        with open(SESSION_FILE) as f:
+            data = json.load(f)
+        cookies = data.get("cookies", [])
+        if not cookies:
+            return jsonify({"healthy": False, "connected": True, "reason": "Session file has no cookies."})
+        # Check if key auth cookies exist and haven't expired
+        now = time.time()
+        auth_names = {"auth_token", "ct0"}
+        found = {}
+        for c in cookies:
+            name = c.get("name", "")
+            if name in auth_names:
+                expires = c.get("expires", -1)
+                found[name] = expires
+        if not found:
+            return jsonify({"healthy": False, "connected": True,
+                            "reason": "Session missing auth cookies (auth_token / ct0)."})
+        for name, expires in found.items():
+            if expires > 0 and expires < now:
+                return jsonify({"healthy": False, "connected": True,
+                                "reason": f"Cookie '{name}' expired."})
+        # Check file age — sessions older than 7 days are risky
+        age_days = (now - SESSION_FILE.stat().st_mtime) / 86400
+        warning = None
+        if age_days > 7:
+            warning = f"Session is {int(age_days)} days old — consider refreshing."
+        return jsonify({"healthy": True, "connected": True, "warning": warning,
+                        "age_days": round(age_days, 1),
+                        "auth_cookies": list(found.keys())})
+    except Exception as exc:
+        return jsonify({"healthy": False, "connected": True, "reason": str(exc)})
+
+
+@app.route("/paste-cookies", methods=["POST"])
+def paste_cookies():
+    """
+    Accept raw Cookie-Editor JSON (array of cookie objects) pasted from the
+    browser, convert to Playwright session format, and save as session.json.
+    This lets users fix expired sessions without touching the terminal.
+    """
+    from import_cookies import convert
+    from scraper import SESSION_FILE, _secure_session_file
+    body = request.get_json(force=True, silent=True)
+    if not body:
+        return jsonify({"ok": False, "message": "No JSON body received."}), 400
+    # Accept either the raw array or { "cookies": [...] }
+    raw = body if isinstance(body, list) else body.get("cookies", body)
+    if not isinstance(raw, list) or len(raw) == 0:
+        return jsonify({"ok": False, "message": "Expected a JSON array of cookies from Cookie-Editor."}), 400
+    # Basic validation: each entry should have at least name + value
+    for i, c in enumerate(raw[:200]):
+        if not isinstance(c, dict) or "name" not in c or "value" not in c:
+            return jsonify({"ok": False, "message": f"Cookie at index {i} is missing 'name' or 'value'."}), 400
+    try:
+        session = convert(raw)
+        SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=SESSION_FILE.parent)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(session, f, indent=2)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, str(SESSION_FILE))
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        _secure_session_file()
+        return jsonify({"ok": True, "message": f"Session saved with {len(session['cookies'])} cookies. You can now run scans."})
+    except Exception as exc:
+        return jsonify({"ok": False, "message": f"Failed to convert cookies: {exc}"}), 500
+
+
 @app.route("/import-session", methods=["POST"])
 def import_session():
     """

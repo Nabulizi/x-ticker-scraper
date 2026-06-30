@@ -46,6 +46,10 @@
           class="hidden text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-3 py-1 rounded transition-colors">
           Connect X Account
         </button>
+        <button id="pasteCookiesBtn" onclick="openCookieModal()"
+          class="hidden text-xs bg-green-900 hover:bg-green-800 border border-green-700 text-green-200 px-3 py-1 rounded transition-colors">
+          🍪 Paste Cookies
+        </button>
         <label id="importSessionBtn" class="hidden cursor-pointer text-xs bg-sky-900 hover:bg-sky-800 border border-sky-700 text-sky-200 px-3 py-1 rounded transition-colors" title="Upload a session.json generated locally">
           Import Session File
           <input type="file" accept=".json,application/json" class="hidden" onchange="importSession(this)">
@@ -188,10 +192,41 @@
       <span id="sessionBannerMsg">X session expired. Please reconnect to continue scanning.</span>
       <div class="flex gap-2 shrink-0">
         <button onclick="connectX()" class="bg-yellow-700 hover:bg-yellow-600 text-white text-xs font-semibold px-4 py-1.5 rounded transition-colors" id="sessionBannerBtn">Connect X Account</button>
+        <button onclick="openCookieModal()" class="bg-green-700 hover:bg-green-600 text-white text-xs font-semibold px-4 py-1.5 rounded transition-colors">🍪 Paste Cookies</button>
         <label class="cursor-pointer bg-sky-700 hover:bg-sky-600 text-white text-xs font-semibold px-4 py-1.5 rounded transition-colors" title="Recommended for cloud servers: upload session.json generated locally">
           ⬆ Import Session File
           <input type="file" accept=".json,application/json" class="hidden" onchange="importSession(this)">
         </label>
+      </div>
+    </div>
+
+    <!-- Session health warning banner -->
+    <div id="sessionHealthBanner" role="status" class="hidden bg-amber-950 border border-amber-700 rounded-xl p-4 mb-6 text-amber-300 text-sm flex items-center justify-between gap-4">
+      <span id="sessionHealthMsg"></span>
+      <button onclick="openCookieModal()" class="shrink-0 bg-green-700 hover:bg-green-600 text-white text-xs font-semibold px-4 py-1.5 rounded transition-colors">🍪 Refresh Cookies</button>
+    </div>
+
+    <!-- Cookie paste modal -->
+    <div id="cookieModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/70" onclick="if(event.target===this)closeCookieModal()">
+      <div class="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-lg mx-4 p-6">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-lg font-semibold text-slate-100">Paste X Cookies</h3>
+          <button onclick="closeCookieModal()" class="text-slate-400 hover:text-slate-200 text-xl leading-none">&times;</button>
+        </div>
+        <ol class="text-sm text-slate-400 mb-4 space-y-1.5 list-decimal list-inside">
+          <li>Install the <a href="https://cookie-editor.com/" target="_blank" class="text-sky-400 hover:underline">Cookie-Editor</a> browser extension</li>
+          <li>Go to <a href="https://x.com" target="_blank" class="text-sky-400 hover:underline">x.com</a> and make sure you are logged in</li>
+          <li>Click Cookie-Editor icon → <strong class="text-slate-200">Export</strong> → <strong class="text-slate-200">Export as JSON</strong></li>
+          <li>Paste the copied JSON below</li>
+        </ol>
+        <textarea id="cookieInput" rows="8" placeholder='[{"name":"auth_token","value":"...","domain":".x.com",...},...]'
+          class="w-full bg-slate-800 border border-slate-600 rounded-lg p-3 text-sm text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-green-500/50 resize-y"></textarea>
+        <div id="cookieError" class="hidden mt-2 text-red-400 text-xs"></div>
+        <div id="cookieSuccess" class="hidden mt-2 text-green-400 text-xs"></div>
+        <div class="flex justify-end gap-3 mt-4">
+          <button onclick="closeCookieModal()" class="text-sm text-slate-400 hover:text-slate-200 px-4 py-2">Cancel</button>
+          <button id="cookieSubmitBtn" onclick="submitCookies()" class="text-sm bg-green-700 hover:bg-green-600 text-white font-semibold px-6 py-2 rounded-lg transition-colors">Save Cookies</button>
+        </div>
       </div>
     </div>
 
@@ -596,17 +631,20 @@
       const badge = document.getElementById('xStatusBadge');
       const btn = document.getElementById('connectXBtn');
       const importBtn = document.getElementById('importSessionBtn');
+      const pasteBtn = document.getElementById('pasteCookiesBtn');
       badge.classList.remove('hidden');
       if (connected) {
         badge.textContent = '● X connected';
         badge.className = 'text-xs px-2 py-1 rounded border border-green-800 bg-green-950 text-green-400';
         btn.classList.add('hidden');
         importBtn.classList.add('hidden');
+        pasteBtn.classList.add('hidden');
         document.getElementById('sessionBanner').classList.add('hidden');
       } else {
         badge.textContent = '○ X disconnected';
         badge.className = 'text-xs px-2 py-1 rounded border border-yellow-800 bg-yellow-950 text-yellow-400';
         importBtn.classList.remove('hidden');
+        pasteBtn.classList.remove('hidden');
         if (headless) {
           // On headless servers (Render), browser-based login is blocked by X.
           // Import Session File is the only reliable path.
@@ -666,6 +704,103 @@
         showError('Import failed: ' + e.message);
       }
     }
+
+    // ── Cookie paste modal ────────────────────────────────────────────────────
+
+    function openCookieModal() {
+      document.getElementById('cookieInput').value = '';
+      document.getElementById('cookieError').classList.add('hidden');
+      document.getElementById('cookieSuccess').classList.add('hidden');
+      document.getElementById('cookieModal').classList.remove('hidden');
+      document.getElementById('cookieInput').focus();
+    }
+
+    function closeCookieModal() {
+      document.getElementById('cookieModal').classList.add('hidden');
+    }
+
+    async function submitCookies() {
+      const input = document.getElementById('cookieInput');
+      const errEl = document.getElementById('cookieError');
+      const okEl = document.getElementById('cookieSuccess');
+      const btn = document.getElementById('cookieSubmitBtn');
+      errEl.classList.add('hidden');
+      okEl.classList.add('hidden');
+
+      const raw = input.value.trim();
+      if (!raw) {
+        errEl.textContent = 'Paste your Cookie-Editor JSON export here.';
+        errEl.classList.remove('hidden');
+        return;
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        errEl.textContent = 'Invalid JSON. Make sure you copied the full Cookie-Editor export.';
+        errEl.classList.remove('hidden');
+        return;
+      }
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        errEl.textContent = 'Expected a JSON array of cookies. Use Cookie-Editor → Export as JSON.';
+        errEl.classList.remove('hidden');
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Saving...';
+      try {
+        const data = await fetchJson('/paste-cookies', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(parsed),
+        });
+        if (data.ok) {
+          okEl.textContent = data.message;
+          okEl.classList.remove('hidden');
+          updateXStatus(true);
+          document.getElementById('sessionBanner').classList.add('hidden');
+          document.getElementById('sessionHealthBanner').classList.add('hidden');
+          setTimeout(closeCookieModal, 1500);
+        } else {
+          errEl.textContent = data.message;
+          errEl.classList.remove('hidden');
+        }
+      } catch (e) {
+        errEl.textContent = 'Failed: ' + e.message;
+        errEl.classList.remove('hidden');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Save Cookies';
+      }
+    }
+
+    // ── Proactive session health check ────────────────────────────────────────
+
+    async function checkSessionHealth() {
+      try {
+        const data = await fetchJson('/session-health');
+        const banner = document.getElementById('sessionHealthBanner');
+        const msg = document.getElementById('sessionHealthMsg');
+        if (!data.healthy && data.connected) {
+          // Session file exists but cookies are bad
+          msg.textContent = '⚠ ' + data.reason + ' Paste fresh cookies to fix.';
+          banner.classList.remove('hidden');
+        } else if (data.warning) {
+          msg.textContent = '⚠ ' + data.warning;
+          banner.classList.remove('hidden');
+        } else {
+          banner.classList.add('hidden');
+        }
+        if (!data.healthy && !data.connected) {
+          updateXStatus(false);
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    // Check session health on load and every 5 minutes
+    checkSessionHealth();
+    setInterval(checkSessionHealth, 300000);
 
     // ── Watchlists ────────────────────────────────────────────────────────────
 
