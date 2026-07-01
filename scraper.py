@@ -185,6 +185,25 @@ def _stealth_user_agent(browser) -> str:
     )
 
 
+def _read_session_ua() -> Optional[str]:
+    """Read the user agent stored in session.json at login time.
+    Cloudflare's cf_clearance cookie is bound to the UA that solved the
+    challenge, so reusing the same UA on a different platform (e.g. Render)
+    avoids invalidating the cookie."""
+    try:
+        data = json.loads(SESSION_FILE.read_text())
+        return data.get("_user_agent")
+    except Exception:
+        return None
+
+
+def _platform_for_ua(ua: str) -> str:
+    """Derive navigator.platform value from a user-agent string."""
+    if "Macintosh" in ua or "Mac OS X" in ua:
+        return "MacIntel"
+    return "Linux x86_64"
+
+
 async def _launch_stealth_browser(pw, headless: bool, slow_mo: int = 0):
     """Launch Chromium with the automation fingerprints stripped. Prefers the
     real installed Chrome channel (most genuine fingerprint) and falls back to
@@ -217,9 +236,10 @@ def _stealth_context_kwargs(browser) -> dict:
     }
 
 
-async def _apply_stealth(context) -> None:
+async def _apply_stealth(context, nav_platform: Optional[str] = None) -> None:
     """Install the fingerprint-patching init script on every page in the context."""
-    nav_platform = "Linux x86_64" if sys.platform.startswith("linux") else "MacIntel"
+    if nav_platform is None:
+        nav_platform = "Linux x86_64" if sys.platform.startswith("linux") else "MacIntel"
     platform_js = f'Object.defineProperty(navigator, "platform", {{get: () => "{nav_platform}"}});\n'
     await context.add_init_script(platform_js + _STEALTH_INIT_JS)
 
@@ -716,6 +736,17 @@ async def _save_login_session(*, headless: bool, slow_mo: int = 0, progress=None
 
             SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
             await context.storage_state(path=str(SESSION_FILE))
+            # Embed the UA inside session.json so Render reuses the same one
+            # (Cloudflare's cf_clearance cookie is bound to the UA).
+            try:
+                data = json.loads(SESSION_FILE.read_text())
+                data["_user_agent"] = _stealth_user_agent(browser)
+                fd, tmp = tempfile.mkstemp(dir=SESSION_FILE.parent)
+                os.write(fd, json.dumps(data).encode())
+                os.close(fd)
+                os.replace(tmp, str(SESSION_FILE))
+            except Exception:
+                pass  # non-fatal — session still works, just without UA pinning
             _secure_session_file()
         finally:
             await browser.close()
@@ -1033,7 +1064,10 @@ async def _fetch_posts(
                 token in (body or "").lower()
                 for token in ("doesn't exist", "account suspended", "protected")
             ):
-                await page.reload(wait_until="domcontentloaded")
+                try:
+                    await page.goto(f"https://x.com/{username}", wait_until="domcontentloaded")
+                except PWTimeout:
+                    pass
                 await asyncio.sleep(1.0)
                 continue
             raise _timeline_load_error(username, body)
@@ -1211,10 +1245,16 @@ async def scrape_accounts(
             await _refresh_session(progress=progress)
 
         browser = await _launch_stealth_browser(pw, headless=True, slow_mo=60)
+        # Use the UA that was saved when the session was created so
+        # Cloudflare's cf_clearance cookie stays valid across platforms.
+        saved_ua = _read_session_ua()
         ctx_kwargs = _stealth_context_kwargs(browser)
+        if saved_ua:
+            ctx_kwargs["user_agent"] = saved_ua
         ctx_kwargs["storage_state"] = str(SESSION_FILE)
         context = await browser.new_context(**ctx_kwargs)
-        await _apply_stealth(context)
+        nav_platform = _platform_for_ua(saved_ua) if saved_ua else None
+        await _apply_stealth(context, nav_platform=nav_platform)
         page = await context.new_page()
         # Secondary page used exclusively to fetch full text of truncated posts.
         # Kept open for the whole session so we avoid repeated browser-context overhead.
@@ -1223,8 +1263,10 @@ async def scrape_accounts(
         await page.goto("https://x.com/home", wait_until="domcontentloaded")
 
         # Wait for the signed-in shell.  On cloud servers (Render) X can be
-        # slow to hydrate or may serve an interstitial, so retry once after
-        # a full page reload before giving up.
+        # slow to hydrate or may serve an interstitial, so retry once with
+        # a fresh navigation before giving up.  We use goto (not reload)
+        # because a failed Cloudflare challenge may leave a pending JS
+        # redirect that blocks reload indefinitely.
         logged_in = None
         for attempt in range(2):
             try:
@@ -1234,8 +1276,11 @@ async def scrape_accounts(
             except PWTimeout:
                 logged_in = False
                 if attempt == 0:
-                    print("[…] Session check timed out, retrying with reload…")
-                    await page.reload(wait_until="domcontentloaded")
+                    print("[…] Session check timed out, retrying with fresh navigation…")
+                    try:
+                        await page.goto("https://x.com/home", wait_until="domcontentloaded")
+                    except PWTimeout:
+                        pass  # let the next _wait_for_signed_in attempt decide
 
         if not logged_in:
             url = page.url
