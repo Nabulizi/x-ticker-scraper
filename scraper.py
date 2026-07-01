@@ -35,7 +35,10 @@ def _secure_session_file() -> None:
 
 def _bootstrap_session_from_env() -> bool:
     """
-    Write session.json from the XTS_SESSION_B64 env var when the file is absent.
+    Write session.json from the XTS_SESSION_B64 env var.
+
+    Overwrites the existing file when the env var contains a _user_agent
+    field but the on-disk file does not (upgrade path for UA-pinning fix).
 
     Usage on Render (or any headless server):
       1. Log in locally: python3 -c "import asyncio; from scraper import _manual_login; asyncio.run(_manual_login())"
@@ -46,8 +49,17 @@ def _bootstrap_session_from_env() -> bool:
     Returns True if the session file was written, False otherwise.
     """
     raw = os.getenv("XTS_SESSION_B64", "").strip()
-    if not raw or SESSION_FILE.exists():
+    if not raw:
         return False
+    # If the file already exists AND already has _user_agent, skip.
+    # Otherwise overwrite so the UA-pinning fix takes effect.
+    if SESSION_FILE.exists():
+        try:
+            existing = json.loads(SESSION_FILE.read_text())
+            if existing.get("_user_agent"):
+                return False  # already up to date
+        except Exception:
+            pass  # corrupted file — overwrite it
     try:
         data = base64.b64decode(raw)
         json.loads(data)  # validate it is well-formed JSON before writing
