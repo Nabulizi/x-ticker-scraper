@@ -138,8 +138,6 @@ _STEALTH_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
 ]
-HEADLESS_REFRESH_TIMEOUT = 120
-VISIBLE_REFRESH_TIMEOUT = 180
 
 _STEALTH_INIT_JS = """
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
@@ -721,11 +719,10 @@ async def _save_login_session(*, headless: bool, slow_mo: int = 0, progress=None
 
 async def _refresh_session(progress=None) -> None:
     """
-    Best-effort silent login path for expired/missing sessions.
-    Falls back to an automatic visible-browser login if headless auth is blocked.
+    Attempt to restore session from XTS_SESSION_B64 env var.
+    If unavailable, raise SessionExpired — the user must paste cookies or
+    import a session.json via the web UI.
     """
-    # If XTS_SESSION_B64 is set, try restoring the session file before touching
-    # the browser at all (this is the primary path on headless servers like Render).
     if _bootstrap_session_from_env():
         _emit(progress, {
             "type": "progress",
@@ -733,80 +730,10 @@ async def _refresh_session(progress=None) -> None:
         })
         return
 
-    _emit(progress, {
-        "type": "progress",
-        "message": "Cached X session unavailable — attempting automatic re-login...",
-    })
-    x_user, x_pass, x_email = _get_x_credentials()
-
-    # Determine effective login method: if Google is requested but credentials
-    # are incomplete (e.g. X_LOGIN_METHOD=google left over from old config but
-    # no GOOGLE_EMAIL / X_EMAIL set), fall back silently to native.
-    use_google = _should_prefer_google_login(
-        x_username=x_user,
-        x_password=x_pass,
-        x_email=x_email,
-    ) and _google_credentials_available(
-        x_username=x_user, x_password=x_pass, x_email=x_email
+    raise SessionExpired(
+        "X session expired or missing. "
+        "Paste fresh cookies via the 'Paste Cookies' button or import a session.json file."
     )
-
-    if use_google:
-        _emit(progress, {
-            "type": "progress",
-            "message": "Using Google-based X sign-in in headless mode...",
-        })
-        try:
-            await asyncio.wait_for(
-                _save_login_session(headless=True, slow_mo=60, progress=progress),
-                timeout=HEADLESS_REFRESH_TIMEOUT,
-            )
-        except ValueError as exc:
-            raise SessionExpired(
-                "No X session found and automatic Google-based login is unavailable."
-            ) from exc
-        except Exception as exc:
-            reason = str(exc) or type(exc).__name__
-            raise SessionExpired(
-                "Automatic Google-based X login failed in headless mode. "
-                f"Reason: {reason}. "
-                "On headless servers, set the XTS_SESSION_B64 environment variable "
-                "to a base64-encoded session.json (generated locally via _manual_login)."
-            ) from exc
-        _emit(progress, {
-            "type": "progress",
-            "message": "Automatic X login succeeded. Refreshing session...",
-        })
-        return
-
-    try:
-        await asyncio.wait_for(
-            _save_login_session(headless=True, slow_mo=60, progress=progress),
-            timeout=HEADLESS_REFRESH_TIMEOUT,
-        )
-    except ValueError as exc:
-        raise SessionExpired(
-            "No X session found and automatic login is unavailable. Set X_USERNAME and X_PASSWORD in .env, or click 'Connect X Account'."
-        ) from exc
-    except Exception as headless_exc:
-        _emit(progress, {
-            "type": "progress",
-            "message": "Headless X login was blocked — opening a visible browser to finish automatic login...",
-        })
-        try:
-            await asyncio.wait_for(
-                _save_login_session(headless=False, slow_mo=80, progress=progress),
-                timeout=VISIBLE_REFRESH_TIMEOUT,
-            )
-        except Exception as visible_exc:
-            raise SessionExpired(
-                "Automatic X login failed in both headless and visible modes. "
-                f"Headless: {headless_exc}. Visible: {visible_exc}. "
-                "Click 'Connect X Account' if you want to retry the visible flow manually."
-            ) from visible_exc
-    _emit(progress, {
-        "type": "progress",
-        "message": "Automatic X login succeeded. Refreshing session...",
-    })
 
 
 async def _manual_login() -> None:
@@ -1303,23 +1230,9 @@ async def scrape_accounts(
         if not logged_in:
             await browser.close()
             SESSION_FILE.unlink(missing_ok=True)
-            await _refresh_session(progress=progress)
-            browser = await _launch_stealth_browser(pw, headless=True, slow_mo=60)
-            ctx_kwargs = _stealth_context_kwargs(browser)
-            ctx_kwargs["storage_state"] = str(SESSION_FILE)
-            context = await browser.new_context(**ctx_kwargs)
-            await _apply_stealth(context)
-            page = await context.new_page()
-            page2 = await context.new_page()
-            await page.goto("https://x.com/home", wait_until="domcontentloaded")
-            try:
-                await _wait_for_signed_in(page, timeout=10000)
-            except PWTimeout as exc:
-                await browser.close()
-                SESSION_FILE.unlink(missing_ok=True)
-                raise SessionExpired(
-                    "Automatic X login refreshed the session, but X still did not restore access. Click 'Connect X Account' to finish a visible login."
-                ) from exc
+            raise SessionExpired(
+                "X session expired. Paste fresh cookies or import a new session.json to continue scanning."
+            )
 
         print("[✓] Using cached session")
         _emit(progress, {"type": "progress", "message": "Using cached X session"})

@@ -8,6 +8,8 @@ import asyncio
 import os
 import queue
 import tempfile
+
+import pytest
 from datetime import timezone
 from pathlib import Path
 
@@ -134,38 +136,20 @@ def test_velocity_endpoint_accepts_share_class_tickers():
         store.DB_PATH = original_db_path
 
 
-def test_refresh_session_stays_headless_when_render_flag_is_set():
+def test_refresh_session_raises_without_session_b64():
+    """_refresh_session raises SessionExpired when no XTS_SESSION_B64 is set."""
     import scraper
 
-    original_env = {
-        k: os.environ.get(k)
-        for k in ("XTS_CONNECT_HEADLESS", "X_USERNAME", "X_PASSWORD", "X_EMAIL", "X_LOGIN_METHOD")
-    }
-    original_should = scraper._should_prefer_google_login
-    original_save = scraper._save_login_session
-    called = {}
-
-    async def fake_save(*, headless, slow_mo=0, progress=None):
-        called["headless"] = headless
-
+    original_env = os.environ.get("XTS_SESSION_B64")
     try:
-        os.environ["XTS_CONNECT_HEADLESS"] = "1"
-        os.environ["X_USERNAME"] = "user"
-        os.environ["X_PASSWORD"] = "pass"
-        os.environ.pop("X_EMAIL", None)
-        os.environ["X_LOGIN_METHOD"] = "auto"
-        scraper._should_prefer_google_login = lambda **kwargs: True
-        scraper._save_login_session = fake_save
-        asyncio.run(scraper._refresh_session())
-        assert called["headless"] is True
+        os.environ.pop("XTS_SESSION_B64", None)
+        with pytest.raises(scraper.SessionExpired):
+            asyncio.run(scraper._refresh_session())
     finally:
-        scraper._should_prefer_google_login = original_should
-        scraper._save_login_session = original_save
-        for k, v in original_env.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+        if original_env is None:
+            os.environ.pop("XTS_SESSION_B64", None)
+        else:
+            os.environ["XTS_SESSION_B64"] = original_env
 
 
 def test_headless_mode_can_prefer_google_login():
