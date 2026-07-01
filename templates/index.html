@@ -233,11 +233,15 @@
     <!-- Error -->
     <div id="errorBox" role="alert" aria-live="assertive" class="hidden bg-red-950 border border-red-800 rounded-xl p-4 mb-6">
       <div class="flex items-start justify-between gap-3">
-        <span id="errorMsg" class="text-red-300 text-xs leading-relaxed"></span>
+        <span id="errorMsg" class="text-red-300 text-sm font-medium leading-relaxed"></span>
         <button type="button" onclick="document.getElementById('errorBox').classList.add('hidden')" aria-label="Dismiss error" class="shrink-0 text-red-400 hover:text-red-200 transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 rounded">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
+      <details id="errorDetails" class="hidden mt-3">
+        <summary class="text-red-400 text-xs cursor-pointer hover:text-red-300 select-none">Show details</summary>
+        <pre id="errorDetailsText" class="mt-2 text-red-300/80 text-[11px] leading-relaxed font-mono bg-red-950/50 border border-red-900 rounded-lg p-3 max-h-40 overflow-auto whitespace-pre-wrap break-all"></pre>
+      </details>
     </div>
 
     <!-- Results -->
@@ -908,7 +912,29 @@
     }
 
     function showError(msg) {
-      document.getElementById('errorMsg').textContent = 'Error: ' + msg;
+      const MAX_SUMMARY = 120;
+      const detailsEl = document.getElementById('errorDetails');
+      const detailsText = document.getElementById('errorDetailsText');
+      let summary = msg;
+      let details = '';
+
+      // Split on first newline or period+space for a short summary
+      const splitIdx = msg.search(/[\n]|(?:\.\s)/);
+      if (splitIdx > 0 && splitIdx < MAX_SUMMARY) {
+        summary = msg.slice(0, splitIdx + 1).trim();
+        details = msg.slice(splitIdx + 1).trim();
+      } else if (msg.length > MAX_SUMMARY) {
+        summary = msg.slice(0, MAX_SUMMARY).trim() + '…';
+        details = msg;
+      }
+
+      document.getElementById('errorMsg').textContent = summary;
+      if (details) {
+        detailsText.textContent = details;
+        detailsEl.classList.remove('hidden');
+      } else {
+        detailsEl.classList.add('hidden');
+      }
       document.getElementById('errorBox').classList.remove('hidden');
     }
 
