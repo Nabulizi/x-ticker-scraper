@@ -301,14 +301,18 @@ async def _click_button_by_text(page, names: list[str], timeout: int = 8000) -> 
 async def _wait_for_signed_in(page, timeout: int = 120_000) -> None:
     """
     Treat a signed-in shell as success even if X uses a different post-login URL.
+    Checks multiple selectors that indicate an authenticated session.
     """
     selectors = [
         '[data-testid="SideNav_AccountSwitcher_Button"]',
         '[data-testid="AppTabBar_Home_Link"]',
         'a[aria-label="Home"]',
+        '[data-testid="tweetTextarea_0"]',       # compose box
+        '[data-testid="primaryColumn"]',          # main timeline column
+        'a[href="/compose/post"]',                # compose link
     ]
     last_exc = None
-    per_try_timeout = max(1500, timeout // max(len(selectors), 1))
+    per_try_timeout = max(2000, timeout // max(len(selectors), 1))
     for selector in selectors:
         try:
             await page.wait_for_selector(selector, state="visible", timeout=per_try_timeout)
@@ -1218,14 +1222,20 @@ async def scrape_accounts(
 
         await page.goto("https://x.com/home", wait_until="domcontentloaded")
 
-        # Wait up to 20 s for the account-switcher button — gives the page time
-        # to fully hydrate before we conclude the session is expired.
+        # Wait for the signed-in shell.  On cloud servers (Render) X can be
+        # slow to hydrate or may serve an interstitial, so retry once after
+        # a full page reload before giving up.
         logged_in = None
-        try:
-            await _wait_for_signed_in(page, timeout=20000)
-            logged_in = True
-        except PWTimeout:
-            logged_in = False
+        for attempt in range(2):
+            try:
+                await _wait_for_signed_in(page, timeout=25000)
+                logged_in = True
+                break
+            except PWTimeout:
+                logged_in = False
+                if attempt == 0:
+                    print("[…] Session check timed out, retrying with reload…")
+                    await page.reload(wait_until="domcontentloaded")
 
         if not logged_in:
             url = page.url
