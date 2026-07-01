@@ -1218,20 +1218,23 @@ async def scrape_accounts(
 
         await page.goto("https://x.com/home", wait_until="domcontentloaded")
 
-        # Wait up to 10 s for the account-switcher button — gives the page time
+        # Wait up to 20 s for the account-switcher button — gives the page time
         # to fully hydrate before we conclude the session is expired.
         logged_in = None
         try:
-            await _wait_for_signed_in(page, timeout=10000)
+            await _wait_for_signed_in(page, timeout=20000)
             logged_in = True
         except PWTimeout:
             logged_in = False
 
         if not logged_in:
+            url = page.url
+            title = await page.title()
+            print(f"[✗] Session check failed — url={url} title={title!r}")
             await browser.close()
-            SESSION_FILE.unlink(missing_ok=True)
             raise SessionExpired(
-                "X session expired. Paste fresh cookies or import a new session.json to continue scanning."
+                f"X session expired (landed on {url}). "
+                "Paste fresh cookies or import a new session.json to continue scanning."
             )
 
         print("[✓] Using cached session")
