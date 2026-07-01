@@ -1,5 +1,4 @@
 import asyncio
-import hmac
 import json
 import os
 import queue
@@ -60,30 +59,6 @@ def start_background_services() -> None:
         scheduler.start()
 
 
-def _app_password() -> str:
-    return os.getenv("APP_PASSWORD", "").strip()
-
-
-@app.before_request
-def require_basic_auth():
-    password = _app_password()
-    if not password or request.endpoint == "healthz":
-        return None
-
-    username = os.getenv("APP_USERNAME", "admin").strip() or "admin"
-    auth = request.authorization
-    if (
-        auth
-        and hmac.compare_digest(auth.username or "", username)
-        and hmac.compare_digest(auth.password or "", password)
-    ):
-        return None
-
-    return Response(
-        "Authentication required\n",
-        401,
-        {"WWW-Authenticate": 'Basic realm="X Ticker Scraper"'},
-    )
 
 
 def _prune_scans_locked() -> None:
