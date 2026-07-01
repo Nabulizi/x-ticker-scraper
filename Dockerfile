@@ -16,4 +16,4 @@ RUN mkdir -p /app/data/output
 
 EXPOSE 10000
 
-CMD exec gunicorn --workers 1 --threads 8 --timeout 600 --bind 0.0.0.0:${PORT:-10000} wsgi:app
+CMD exec gunicorn --worker-class gthread --workers 1 --threads 16 --timeout 600 --bind 0.0.0.0:${PORT:-10000} wsgi:app
