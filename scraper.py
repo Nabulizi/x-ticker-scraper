@@ -1256,6 +1256,7 @@ async def scrape_accounts(
         if not SESSION_FILE.exists():
             await _refresh_session(progress=progress)
 
+        _emit(progress, {"type": "progress", "message": "Launching browser…"})
         browser = await _launch_stealth_browser(pw, headless=True, slow_mo=60)
         # Use the UA that was saved when the session was created so
         # Cloudflare's cf_clearance cookie stays valid across platforms.
@@ -1272,7 +1273,12 @@ async def scrape_accounts(
         # Kept open for the whole session so we avoid repeated browser-context overhead.
         page2 = await context.new_page()
 
-        await page.goto("https://x.com/home", wait_until="domcontentloaded")
+        _emit(progress, {"type": "progress", "message": "Checking X session…"})
+        try:
+            await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=20000)
+        except PWTimeout:
+            _emit(progress, {"type": "progress", "message": "X is slow to respond, retrying…"})
+            pass  # continue — _wait_for_signed_in will decide
 
         # Wait for the signed-in shell.  On cloud servers (Render) X can be
         # slow to hydrate or may serve an interstitial, so retry once with
@@ -1282,15 +1288,16 @@ async def scrape_accounts(
         logged_in = None
         for attempt in range(2):
             try:
-                await _wait_for_signed_in(page, timeout=25000)
+                await _wait_for_signed_in(page, timeout=15000)
                 logged_in = True
                 break
             except PWTimeout:
                 logged_in = False
                 if attempt == 0:
+                    _emit(progress, {"type": "progress", "message": "Session check timed out, retrying…"})
                     print("[…] Session check timed out, retrying with fresh navigation…")
                     try:
-                        await page.goto("https://x.com/home", wait_until="domcontentloaded")
+                        await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=20000)
                     except PWTimeout:
                         pass  # let the next _wait_for_signed_in attempt decide
 

@@ -562,7 +562,7 @@ def scan_stream(scan_id):
                 if msg.get("type") in ("done", "error", "session_expired"):
                     break
             except queue.Empty:
-                yield 'data: {"type":"ping"}\n\n'
+                yield 'data: {"type":"ping"}\n\n'  # keepalive for Render's proxy
 
     return Response(
         stream_with_context(generate()),
