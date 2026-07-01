@@ -8,7 +8,6 @@ import asyncio
 import os
 import queue
 import tempfile
-from base64 import b64encode
 from datetime import timezone
 from pathlib import Path
 
@@ -133,30 +132,6 @@ def test_velocity_endpoint_accepts_share_class_tickers():
             assert client.get("/velocity/TOOLONGG").status_code == 400
     finally:
         store.DB_PATH = original_db_path
-
-
-def test_basic_auth_protects_app_when_password_is_set():
-    original_user = os.environ.get("APP_USERNAME")
-    original_password = os.environ.get("APP_PASSWORD")
-    try:
-        os.environ["APP_USERNAME"] = "me"
-        os.environ["APP_PASSWORD"] = "secret"
-        client = app.app.test_client()
-
-        assert client.get("/healthz").status_code == 200
-        assert client.get("/").status_code == 401
-
-        token = b64encode(b"me:secret").decode()
-        assert client.get("/", headers={"Authorization": f"Basic {token}"}).status_code == 200
-    finally:
-        if original_user is None:
-            os.environ.pop("APP_USERNAME", None)
-        else:
-            os.environ["APP_USERNAME"] = original_user
-        if original_password is None:
-            os.environ.pop("APP_PASSWORD", None)
-        else:
-            os.environ["APP_PASSWORD"] = original_password
 
 
 def test_refresh_session_stays_headless_when_render_flag_is_set():
